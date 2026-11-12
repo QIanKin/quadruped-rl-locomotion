@@ -39,7 +39,7 @@ $$
 策略梯度（3.10）就可以用旧数据计算了：
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}_{\tau \sim \pi_{\theta_\text{old}}}\left[ \sum_t \rho_t(\theta) \nabla_\theta \log \pi_\theta(a_t \mid s_t) \hat A_t \right]
+\nabla_\theta J(\theta) \approx \mathbb{E}_{\tau \sim \pi_{\theta_\text{old}}}\left[ \sum_t \rho_t(\theta) \nabla_\theta \log \pi_\theta(a_t \mid s_t) \hat A_t \right]
 \tag{5.3}
 $$
 
@@ -68,7 +68,7 @@ $$
 
 注意 $\nabla_\theta L^{\text{CPI}}\big|_{\theta = \theta_\text{old}}$ 等于策略梯度式 3.10，因为 $\rho_t(\theta_\text{old}) = 1$ 且 $\nabla \rho_t = \rho_t \nabla \log \pi_\theta$。所以式 5.4 是 $J$ 的一个*局部*替身：在旧策略处一阶正确，并且可以用旧数据计算。
 
-不加约束地最大化式 5.4 是灾难性的，值得看清楚到底为什么。如果某个样本的 $\hat A_t > 0$，那么随着 $\pi_\theta(a_t \mid s_t) \to 1$，目标会无界增长。优化器会很乐意把策略推向这样一种状态：把全部概率质量都压在这次 rollout 中恰好具有正估计优势的那少数几个动作上——而这些优势估计本身就带噪声，况且原本也只在 $\theta_\text{old}$ 附近才成立。
+不加约束地最大化式 5.4 是灾难性的，值得看清楚到底为什么。如果某个样本的 $\hat A_t > 0$，那么随着 $\pi_\theta(a_t \mid s_t)$ 不断增大（对高斯策略而言，这个密度可以无上限地增大），目标会无界增长。优化器会很乐意把策略推向这样一种状态：把全部概率质量都压在这次 rollout 中恰好具有正估计优势的那少数几个动作上——而这些优势估计本身就带噪声，况且原本也只在 $\theta_\text{old}$ 附近才成立。
 
 ## 5.4 TRPO：显式的信赖域
 
@@ -87,7 +87,7 @@ KL 散度是正确的度量，因为它关乎分布，而不是参数。它不�
 TRPO 的理论支撑是实打实的：存在如下形式的单调改进保证
 
 $$
-J(\pi_\text{new}) \ge L^{\text{CPI}}(\pi_\text{new}) - C \cdot \max_s D_{\mathrm{KL}}
+J(\pi_\text{new}) \ge J(\pi_\text{old}) + L^{\text{CPI}}(\pi_\text{new}) - C \cdot \max_s D_{\mathrm{KL}}
 $$
 
 因此只要待在信赖域内，就能保证你不会让情况变得更糟。
@@ -111,17 +111,19 @@ $$
 
 **情形 $\hat A_t > 0$**（该动作优于平均水平；我们希望它更可能被选中，即希望 $\rho$ 增大）：
 
-- $\rho < 1 + \varepsilon$：裁剪不起作用，两个分支都等于 $\rho \hat A$，梯度正常流动。
+- $\rho < 1 + \varepsilon$：min 选中未裁剪的分支 $\rho \hat A$（在 $[1-\varepsilon, 1+\varepsilon]$ 内两个分支相等；$\rho < 1-\varepsilon$ 时被裁剪的分支更大），梯度正常流动。
 - $\rho > 1 + \varepsilon$：被裁剪的分支是 $(1+\varepsilon)\hat A$，一个常数。min 会选中它（它更小）。关于 $\theta$ 的梯度为**零**。
 
 所以一旦该动作的概率已经是原来的 $1+\varepsilon$ 倍，再让它变得更可能也不会得到任何额外奖励。不是惩罚——而是不再有激励。
 
 **情形 $\hat A_t < 0$**（我们希望 $\rho$ 减小）：
 
-- $\rho > 1 - \varepsilon$：未被裁剪，梯度流动。
-- $\rho < 1 - \varepsilon$：被裁剪的分支是 $(1-\varepsilon)\hat A$，由于 $\hat A < 0$，它比 $\rho\hat A$ *更大*。min 选中的是**未裁剪**的分支，所以梯度继续流动。
+- $\rho > 1 - \varepsilon$：min 选中未裁剪的分支 $\rho \hat A$（$\rho > 1+\varepsilon$ 时，被裁剪的分支 $(1+\varepsilon)\hat A$ 比 $\rho\hat A$ 更大），梯度流动。
+- $\rho < 1 - \varepsilon$：被裁剪的分支是 $(1-\varepsilon)\hat A$，由于 $\hat A < 0$，它比 $\rho\hat A$ *更小*。min 选中它，关于 $\theta$ 的梯度为**零**。
 
-这种不对称是有意为之的，也正是使用 `min` 而不是单纯裁剪的意义所在。如果一个动作的结果比预期糟糕得多，策略可以不受限制地继续压低它。悲观总是安全的；需要约束的是乐观。
+所以一旦该动作的概率已经降到原来的 $1-\varepsilon$ 倍，再继续压低它也不会得到任何额外奖励。
+
+这种不对称是有意为之的，也正是使用 `min` 而不是单纯裁剪的意义所在：裁剪只在比率朝着*让目标改善*的方向越界时才生效。如果比率朝着让目标*变差*的方向移动（$\hat A > 0$ 而 $\rho < 1-\varepsilon$，或 $\hat A < 0$ 而 $\rho > 1+\varepsilon$），min 选中的是未裁剪的分支，梯度照常流动，策略总能把错误的移动纠正回来。悲观总是安全的；需要约束的是乐观。
 
 ### 悲观视角
 
@@ -210,7 +212,7 @@ PPO 在一次 rollout 上做 $K$ 个 epoch 的小批量 SGD。第 3 章说过，
 | 符号 | 名称 | v2 取值 | v1 取值 | 说明 |
 |---|---|---|---|---|
 | $\varepsilon$ | `clip_range` | 0.2 | 0.2 | 标准取值；很少值得改动 |
-| $\varepsilon_v$ | `clip_range_vf` | 0.2 | 无 | 价值裁剪，v2 中新增 |
+| $\varepsilon_v$ | `clip_range_vf` | 0.2（仅 `ppo_from_scratch`） | 无 | 价值裁剪，v2 中新增；`scripts/train.py` 未传入该参数，SB3 默认 `None`，即不裁剪 |
 | $c_v$ | `vf_coef` | 0.5 | 0.5 | |
 | $c_e$ | `ent_coef` | 0.002 | 0.01 | v1 的取值高到足以让策略无法稳定下来 |
 | $K$ | `n_epochs` | 5 | 10 | |
