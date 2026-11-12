@@ -137,9 +137,9 @@ RR (rear right)           0.520       2.00         0.00         0.00
 
 ### 测试套件
 
-79 个测试，全部通过：对照 MuJoCo 自带的 `mju_rotVecQuat` 检验四元数变换、欧拉角约定、步态时序的周期性与占空比、每个奖励项的符号与取值范围、观测的形状与有限性、指令条件化、接触检测，以及通过 SB3 的 `check_env` 检验 Gymnasium API 合规性。
+83 个测试（82 个在 CPU 上运行，1 个需要 GPU），全部通过：对照 MuJoCo 自带的 `mju_rotVecQuat` 检验四元数变换、欧拉角约定、步态时序的周期性与占空比、每个奖励项的符号与取值范围、观测的形状与有限性、指令条件化、接触检测，以及通过 SB3 的 `check_env` 检验 Gymnasium API 合规性。
 
-其中两个测试断言 v1 的 bug 是真实存在的，而不只是怀疑：`test_v1_nominal_pose_would_not_stand` 和 `test_v1_gait_reward_was_maximised_by_standing_still`。另外四个（`tests/test_mjx.py`）断言 CPU 和 MJX 两个后端从同一状态算出相同的奖励——正是这一点，才让两个后端共享 `envs/rewards.py` 有了意义。
+其中两个测试断言 v1 的 bug 是真实存在的，而不只是怀疑：`test_v1_nominal_pose_would_not_stand` 和 `test_v1_gait_reward_was_maximised_by_standing_still`。另外，`tests/test_mjx.py` 中的十个测试检查 CPU 和 MJX 两个后端的一致性，其核心是断言二者从同一状态算出相同的奖励——正是这一点，才让两个后端共享 `envs/rewards.py` 有了意义。
 
 ## 15.2 v1 公布的数字
 
@@ -169,12 +169,12 @@ RR (rear right)           0.520       2.00         0.00         0.00
 
 ```bash
 make evaluate-grid                      # sweep each axis independently
-make evaluate                           # random commands from the full envelope
+make evaluate                           # random commands from the trained envelope
 make gait-analysis                      # duty factor, phase offsets, schedule match
 make gait-all                           # one gait diagram per gait
 ```
 
-`evaluate --grid` 分别独立地扫描 $v_x \in [-1.0, 1.5]$、$v_y \in [-0.75, 0.75]$ 和 $\omega_z \in [-1.5, 1.5]$，外加四个对角组合指令；每个指令在 1 秒的稳定期之后保持 8 秒。
+`evaluate --grid` 分别独立地扫描 $v_x \in [-1.0, 1.5]$、$v_y \in [-0.75, 0.75]$ 和 $\omega_z \in [-1.5, 1.5]$，外加四个对角组合指令；每个指令保持 8 秒，其中前 1 秒为稳定期、不计入统计。
 
 ### 报告哪些指标
 
@@ -224,7 +224,7 @@ make gait-all                           # one gait diagram per gait
 
 训练运行：18.76M 步，16 个环境，随机种子 0，以约 600 steps/s 的速度跑了大约 8 小时。课程达到了 1.0 级（完整的指令范围）。最终 `explained_variance` 为 0.93，策略标准差从 0.37 退火到 0.18。
 
-**跟踪：从训练范围中随机抽取 30 个指令，每个 8 s**（`make evaluate`）：
+**跟踪：从训练范围中随机抽取 30 个指令，每个 8 s**（`scripts/evaluate.py --episodes 30`；`make evaluate` 默认只抽 20 个）：
 
 | 指标 | v2 | v1 |
 |---|---|---|

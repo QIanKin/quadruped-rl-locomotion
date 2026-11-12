@@ -2,7 +2,7 @@
 
 本章从头到尾走读 `ppo_from_scratch/ppo.py`，把每一段代码对应到第 4 章和第 5 章的公式上。阅读时请把这个文件打开放在旁边。
 
-这个文件大约 450 行。其中大约 120 行是算法本身；其余的都是每个真实实现都离不开、却没有任何论文提及的配套机制。这两个数字之间的差距，正是本章的要点。
+这个文件大约 630 行。其中大约 120 行是算法本身；其余的都是每个真实实现都离不开、却没有任何论文提及的配套机制。这两个数字之间的差距，正是本章的要点。
 
 ## 6.1 `RunningMeanStd` —— 观测归一化
 
@@ -15,7 +15,7 @@ class RunningMeanStd:
 
 任何一篇 PPO 论文里都没有它。但在实践中它绝对必不可少。
 
-观测中混杂着尺度相差悬殊的各种量：关节角度是 $O(1)$ rad 量级，关节速度可达 20 rad/s，步态时钟则落在 $[-1,1]$ 之间。第一个线性层用同一个权重矩阵作用于所有这些量。如果不做归一化，速度那一块就会主导该层的输出，训练早期便被耗费在学习如何压低它的权重上——网络容量和梯度步数都花在了一个本可以用三行算术就消除的问题上。
+观测中混杂着尺度相差悬殊的各种量：关节角度是 $O(1)$ rad 量级，关节速度可达 20 rad/s，步态时钟则落在 $[-1,1]$ 之间。第一个线性层用同一个权重矩阵作用于所有这些量。如果不做归一化，速度那一块就会主导该层的输出，训练早期便被耗费在学习如何压低它的权重上——网络容量和梯度步数都花在了一个本可以用三行算术就消除的问题上。（v2 的环境在此之前已经对各块做了固定缩放，例如关节速度乘以 0.05，见 §9.5；滑动归一化负责处理剩下的偏移和尺度差异。）
 
 更新规则采用 Chan 的并行方差算法，它无需重新遍历数据，就能合并两组（计数、均值、方差）统计量：
 
@@ -28,7 +28,7 @@ M_2 &= \sigma_A^2 n_A + \sigma_B^2 n_B + \Delta^2 \frac{n_A n_B}{n_A + n_B} \\
 \end{aligned}
 $$
 
-朴素的替代方案——累加 $\sum x$ 和 $\sum x^2$——在均值相对于方差很大时会出现灾难性的精度损失，而关节角度聚集在 $-1.8$ rad 附近，恰恰就处于这种情形。
+朴素的替代方案——累加 $\sum x$ 和 $\sum x^2$——在均值相对于方差很大时会出现灾难性的精度损失，而投影重力的 $z$ 分量几乎恒为 $-1$、方差却极小，恰恰就处于这种情形。（关节角度在观测中已经减去了名义姿态，聚集在 0 附近；若直接输入原始关节角，聚集在 $-1.8$ rad 附近的小腿角同样属于这种情形。）
 
 有两点操作上的注意事项，本仓库在这两点上都栽过跟头：
 
@@ -41,7 +41,8 @@ $$
 self.actor  = orthogonal_init(mlp([obs_dim, *hidden, act_dim]))
 nn.init.orthogonal_(self.actor[-2].weight, 0.01)
 self.critic = orthogonal_init(mlp([obs_dim, *hidden, 1]))
-self.log_std = nn.Parameter(torch.full((act_dim,), log_std_init))
+nn.init.orthogonal_(self.critic[-2].weight, 1.0)
+self.log_std = nn.Parameter(torch.full((act_dim,), float(log_std_init)))
 ```
 
 **各自独立的主干网络。** 两个网络不共享任何参数。共享在 Atari 相关工作中很常见，因为那里两个头需要相同的视觉特征；但在这里这是个坏主意：critic 必须为一个随机的、会受外力推扰的机器人的回报建模——它需要能编码“我有多大可能摔倒”的特征——而 actor 需要的是一条平滑的控制律。强迫同一个表示同时服务于两者，会让价值损失和策略损失在共享层上互相争夺，而居中调停的只有 $c_v$。
@@ -73,7 +74,8 @@ def evaluate(self, obs, actions):
 ### `dones` 约定
 
 ```python
-self.dones[i] = self._last_done
+self.buffer.add(self._last_obs, ..., self._last_done, truncated_values)   # collect_rollout
+self.dones[i] = done                                                       # RolloutBuffer.add
 ```
 
 注意，缓冲区把*上一步*的 done 标志和当前观测存放在一起。所以 `dones[t]` 回答的是“`obs[t]` 是不是一个新回合的第一个状态？”，因而 `dones[t+1]` 回答的是“回合是否在第 `t` 步结束？”。这是 CleanRL 的约定，它让 GAE 循环读起来很清爽：
@@ -171,14 +173,16 @@ nn.utils.clip_grad_norm_(self.policy.parameters(), self.cfg.max_grad_norm)
 ### 近似 KL 与提前停止
 
 ```python
-log_ratio = log_prob - mb["log_probs"]
-approx_kl = ((ratio - 1) - log_ratio).mean().item()                   # Eq 5.10
-if approx_kl > 1.5 * self.cfg.target_kl:
+with torch.no_grad():
+    log_ratio = log_prob - mb["log_probs"]
+    approx_kl = ((ratio - 1) - log_ratio).mean().item()               # Eq 5.10
+...
+if self.cfg.target_kl is not None and approx_kl > 1.5 * self.cfg.target_kl:
     early_stopped = True
     break
 ```
 
-注意这段代码位于 `torch.no_grad()` 之内——它是一个诊断量，而不是目标函数的一部分。
+注意 KL 的计算位于 `torch.no_grad()` 之内——它是一个诊断量，而不是目标函数的一部分。
 
 `1.5` 这个倍数是 SB3 的约定，虽然随意但合理：它允许单个噪声较大的小批量通过而不至于放弃整次更新，同时又能拦住真正的漂移。
 
@@ -219,7 +223,7 @@ for update in range(1, n_updates + 1):
 | 特性 | 为何省略 |
 |---|---|
 | 循环（recurrent）策略 | 观测已经足够马尔可夫；而且会增加大量复杂度 |
-| 奖励归一化 | SB3 的 `VecNormalize` 会做这件事；这里的奖励在设计上就已经是 $O(0.5)$ 量级（第 10 章） |
+| 奖励归一化 | SB3 的 `VecNormalize` 会做这件事；这里的奖励在设计上就已经很小且有界：权重按每秒计、再乘以 $\Delta t = 0.02$ s，每步约为 $O(0.05)$（第 10 章） |
 | 多个优化器 | 用一个 Adam 优化全部参数更简单，也管用 |
 | 分布式 rollout 工作进程 | `SubprocVecEnv` 借自 SB3；进程管理不是算法本身 |
 | 线性以外的学习率调度 | 收益递减 |
