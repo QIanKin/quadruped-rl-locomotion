@@ -1,106 +1,80 @@
-# Quadruped RL, from scratch
+# 从零开始的四足机器人强化学习
 
-This is the long-form companion to the code in this repository. It is written
-to be read in order, and it assumes nothing beyond first-year calculus, linear
-algebra, and enough Python to read a `for` loop.
+这是本仓库代码的长篇配套读物。它是为按顺序阅读而写的，除了大一水平的微积分、线性代数，以及足以读懂一个 `for` 循环的 Python 之外，不假设任何前置知识。
 
-The goal is not to summarise reinforcement learning. It is to derive the
-specific algorithm this repository uses, from the definition of a Markov
-decision process to the exact line of PyTorch that implements the clipped
-surrogate objective, and then to explain every engineering decision made in
-turning that algorithm into a robot that walks.
+本书的目标不是概述强化学习，而是推导本仓库所用的那个具体算法——从马尔可夫决策过程的定义，一直到实现裁剪代理目标的那一行 PyTorch 代码——然后解释在把这个算法变成一台会走路的机器人的过程中所做的每一个工程决策。
 
-Where the maths and the code correspond, the correspondence is made explicit:
-equations are numbered, and `ppo_from_scratch/ppo.py` carries comments like
-`(Eq 5.4)` pointing back here.
+凡是数学与代码相对应之处，这种对应都会明确标出：公式都有编号，而 `ppo_from_scratch/ppo.py` 中带有形如 `(Eq 5.4)` 的注释，指回本书相应位置。
 
-**Looking for the current state rather than the explanation?**
-[`WORKLOG.md`](WORKLOG.md) is the running record: what works today, what is
-measured, the decision log, open items, and the traps specific to this machine.
-Start there if you are returning to the project; start here if you want to
-understand it.
+**想看当前状态而不是原理讲解？** [`WORKLOG.md`](WORKLOG.md) 是持续更新的记录：今天什么能用、测得了哪些数据、决策记录、待办事项，以及这台机器特有的坑。如果你是重新回到这个项目，从那里开始；如果你想理解它，从这里开始。
 
-## How to read this
+## 如何阅读本书
 
-If you want to **understand the algorithm**, read 1 through 6 in order. That is
-the mathematical spine: MDP, value functions, policy gradients, GAE, PPO, and
-then the implementation line by line.
+如果你想**理解算法**，请按顺序阅读第 1 至 6 章。这是数学主干：MDP、价值函数、策略梯度、GAE、PPO，然后是逐行讲解的实现。
 
-If you want to **understand the robot**, read 8 through 11. Those chapters are
-about the specific problem — a Go2 in MuJoCo — and are largely independent of
-which RL algorithm you use.
+如果你想**理解机器人**，请阅读第 8 至 11 章。这几章讨论的是具体问题——MuJoCo 中的一台 Go2——在很大程度上与你使用哪种 RL 算法无关。
 
-If you want to **understand what went wrong and how it was found**, read 14. It
-is the debugging log for the v1 → v2 rewrite, and it is the most practically
-useful chapter in the book. It is also the honest one: every bug listed there
-was really in the code, and several of them were subtle enough to survive five
-documented training runs. Six of the twenty-two were mine, introduced during the
-v2 rewrite and caught the same way.
+如果你想**了解哪里出了错、又是怎么发现的**，请阅读第 14 章。它是 v1 → v2 重写的调试日志，也是本书中实践价值最高的一章。它还是最坦诚的一章：其中列出的每一个 bug 都真实存在于代码中，有好几个隐蔽到挺过了五次有记录的训练运行。二十二个中有六个是我自己的，是在 v2 重写期间引入、并用同样的方法抓出来的。
 
-If you are **about to start a training run**, read 13 first. It tells you what
-the TensorBoard traces mean and which failure each one indicates, which is the
-difference between debugging in an afternoon and debugging in a week.
+如果你**即将开始一次训练运行**，请先读第 13 章。它告诉你各条 TensorBoard 曲线的含义，以及每条曲线指示的是哪种故障——这正是一下午调完和一星期调完的区别。
 
-## Chapters
+## 章节
 
-### Part I — The algorithm
+### 第一部分 —— 算法
 
-| # | Chapter | What it covers |
+| # | 章节 | 内容概要 |
 |---|---------|----------------|
-| 1 | [What reinforcement learning actually is](01-what-is-rl.md) | MDPs, trajectories, return, discounting; this robot's MDP written out in full |
-| 2 | [Value functions and policies](02-value-functions-and-policies.md) | $V^\pi$, $Q^\pi$, the advantage, the Bellman equations, and why we estimate rather than solve them |
-| 3 | [Policy gradients from first principles](03-policy-gradients.md) | The log-derivative trick, the policy gradient theorem derived in full, baselines and variance |
-| 4 | [Actor-critic and GAE](04-actor-critic-and-gae.md) | TD errors, $n$-step returns, the $\lambda$-return, the GAE derivation, and the bias–variance dial |
-| 5 | [From TRPO to PPO](05-trpo-to-ppo.md) | Importance sampling, the surrogate objective, trust regions, and why clipping approximates a KL constraint |
-| 6 | [PPO line by line](06-ppo-line-by-line.md) | Every block of `ppo_from_scratch/ppo.py` mapped onto the equations in chapters 4 and 5 |
-| 7 | [Why PPO and not SAC or TD3](07-why-not-sac-td3.md) | On-policy vs off-policy, and an honest re-reading of this repo's own algorithm comparison |
+| 1 | [强化学习到底是什么](01-what-is-rl.md) | MDP、轨迹、回报、折扣；完整写出本机器人的 MDP |
+| 2 | [价值函数与策略](02-value-functions-and-policies.md) | $V^\pi$、$Q^\pi$、优势函数、贝尔曼方程，以及为什么我们去估计而不是求解它们 |
+| 3 | [从第一性原理推导策略梯度](03-policy-gradients.md) | 对数导数技巧、策略梯度定理的完整推导、基线与方差 |
+| 4 | [Actor-Critic 与 GAE](04-actor-critic-and-gae.md) | TD 误差、$n$ 步回报、$\lambda$-回报、GAE 的推导，以及偏差–方差旋钮 |
+| 5 | [从 TRPO 到 PPO](05-trpo-to-ppo.md) | 重要性采样、代理目标、信赖域，以及为什么裁剪近似于一个 KL 约束 |
+| 6 | [逐行解读 PPO](06-ppo-line-by-line.md) | 把 `ppo_from_scratch/ppo.py` 的每一个代码块对应到第 4、5 章的公式上 |
+| 7 | [为什么选 PPO 而不是 SAC 或 TD3](07-why-not-sac-td3.md) | 同策略（on-policy）与异策略（off-policy），以及对本仓库自身算法对比的一次诚实重读 |
 
-### Part II — The robot
+### 第二部分 —— 机器人
 
-| # | Chapter | What it covers |
+| # | 章节 | 内容概要 |
 |---|---------|----------------|
-| 8 | [The Go2, MuJoCo, and PD control](08-the-robot.md) | Kinematics, the MJCF model, torque actuators, the PD law, and why the `home` keyframe matters |
-| 9 | [Observations and actions](09-observations-and-actions.md) | Every one of the 50 observation dimensions justified; why projected gravity, why the body frame, why a clock |
-| 10 | [Reward engineering](10-reward-engineering.md) | All seventeen terms with their equations, exponential kernels vs quadratic costs, and a worked reward-hacking exploit |
-| 11 | [Gaits, phase, and periodic control](11-gaits-and-phase.md) | Gait taxonomy, duty factor, phase offsets, and the maths that makes gait a commandable input |
-| 12 | [Curriculum and domain randomisation](12-curriculum-and-domain-randomization.md) | Why a fixed schedule fails, what a closed-loop curriculum measures, what to randomise and how much |
+| 8 | [Go2、MuJoCo 与 PD 控制](08-the-robot.md) | 运动学、MJCF 模型、力矩执行器、PD 控制律，以及为什么 `home` 关键帧很重要 |
+| 9 | [观测与动作](09-observations-and-actions.md) | 逐一论证 50 个观测维度；为什么用投影重力、为什么用机体坐标系、为什么要一个时钟 |
+| 10 | [奖励工程](10-reward-engineering.md) | 全部十七个奖励项及其公式、指数核与二次代价的对比，以及一个奖励投机（reward hacking）漏洞利用的完整剖析 |
+| 11 | [步态、相位与周期控制](11-gaits-and-phase.md) | 步态分类、占空比、相位偏移，以及让步态成为可指令输入的数学 |
+| 12 | [课程学习与域随机化](12-curriculum-and-domain-randomization.md) | 为什么固定的课程安排会失败、闭环课程测量的是什么、该随机化什么以及随机化多少 |
 
-### Part III — Practice
+### 第三部分 —— 实践
 
-| # | Chapter | What it covers |
+| # | 章节 | 内容概要 |
 |---|---------|----------------|
-| 13 | [Reading a training run](13-training-diagnostics.md) | Explained variance, approximate KL, clip fraction, entropy; what each failure mode looks like |
-| 14 | [The debugging log](14-debugging-log.md) | Twenty-two defects (16 in v1, 6 found in v2): the reasoning that found each one, the evidence, and the fix |
-| 15 | [Results](15-results.md) | v1 vs v2, measured on the same axes |
-| 16 | [What sim-to-real would take](16-sim-to-real.md) | The gaps that remain, honestly enumerated. Not implemented — explained |
-| 17 | [Scaling with MJX](17-mjx-and-scaling.md) | Why 16 CPU environments is the wrong shape for this problem, and what to do about it |
+| 13 | [解读训练过程](13-training-diagnostics.md) | 解释方差、近似 KL、裁剪比例、熵；每种失效模式是什么样子 |
+| 14 | [调试日志](14-debugging-log.md) | 二十二个缺陷（v1 中 16 个，v2 中发现 6 个）：发现每一个的推理过程、证据与修复 |
+| 15 | [结果](15-results.md) | v1 与 v2，在相同的维度上测量 |
+| 16 | [从仿真到现实还需要什么](16-sim-to-real.md) | 尚存的差距，如实列举。没有实现——只做解释 |
+| 17 | [用 MJX 扩展规模](17-mjx-and-scaling.md) | 为什么 16 个 CPU 环境对这个问题来说是错误的形态，以及该怎么办 |
 
-## Notation
+## 符号约定
 
-Used consistently throughout.
+全书统一使用。
 
-| Symbol | Meaning |
+| 符号 | 含义 |
 |--------|---------|
-| $s_t$ | state at time $t$ |
-| $a_t$ | action at time $t$ |
-| $r_t$ | reward received on the transition out of $s_t$ |
-| $\pi_\theta(a \mid s)$ | policy: a distribution over actions, parameterised by $\theta$ |
-| $\gamma$ | discount factor, in $[0, 1)$ |
-| $\lambda$ | GAE trace-decay parameter, in $[0, 1]$ |
-| $G_t$ | return from time $t$ onwards |
-| $V^\pi(s)$ | state-value function under $\pi$ |
-| $Q^\pi(s, a)$ | action-value function under $\pi$ |
-| $A^\pi(s, a)$ | advantage, $Q^\pi - V^\pi$ |
-| $\delta_t$ | TD error at time $t$ |
-| $\hat{A}_t$ | estimated advantage (GAE) |
-| $\tau$ | a trajectory $(s_0, a_0, r_0, s_1, \dots)$ |
-| $\rho_t(\theta)$ | importance ratio $\pi_\theta(a_t \mid s_t) / \pi_{\theta_\text{old}}(a_t \mid s_t)$ |
+| $s_t$ | 时刻 $t$ 的状态 |
+| $a_t$ | 时刻 $t$ 的动作 |
+| $r_t$ | 在离开 $s_t$ 的那次转移上获得的奖励 |
+| $\pi_\theta(a \mid s)$ | 策略：一个关于动作的分布，以 $\theta$ 为参数 |
+| $\gamma$ | 折扣因子，取值于 $[0, 1)$ |
+| $\lambda$ | GAE 迹衰减参数，取值于 $[0, 1]$ |
+| $G_t$ | 从时刻 $t$ 起的回报 |
+| $V^\pi(s)$ | $\pi$ 下的状态价值函数 |
+| $Q^\pi(s, a)$ | $\pi$ 下的动作价值函数 |
+| $A^\pi(s, a)$ | 优势函数，$Q^\pi - V^\pi$ |
+| $\delta_t$ | 时刻 $t$ 的 TD 误差 |
+| $\hat{A}_t$ | 估计的优势（GAE） |
+| $\tau$ | 一条轨迹 $(s_0, a_0, r_0, s_1, \dots)$ |
+| $\rho_t(\theta)$ | 重要性比率 $\pi_\theta(a_t \mid s_t) / \pi_{\theta_\text{old}}(a_t \mid s_t)$ |
 
-Vectors are column vectors. $\Vert x\Vert $ is the Euclidean norm. $\mathbb{E}_{\tau \sim \pi}[\cdot]$
-means the expectation over trajectories generated by following $\pi$.
+向量均为列向量。$\Vert x\Vert $ 是欧几里得范数。$\mathbb{E}_{\tau \sim \pi}[\cdot]$ 表示对遵循 $\pi$ 所生成的轨迹取期望。
 
-## A note on the equations
+## 关于公式的说明
 
-Markdown renderers vary in their LaTeX support. On GitHub, `$...$` and
-`$$...$$` render natively. In a plain text editor they will show as source,
-which is still readable — the notation is standard.
+不同 Markdown 渲染器对 LaTeX 的支持程度各不相同。在 GitHub 上，`$...$` 和 `$$...$$` 可以原生渲染。在纯文本编辑器中它们会显示为源码，但仍然可读——这些记号都是标准的。

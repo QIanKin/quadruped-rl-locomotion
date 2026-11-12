@@ -1,206 +1,135 @@
-# 16. What sim-to-real would take
+# 16. 从仿真到现实还需要什么
 
-Sim-to-real is **out of scope** for this version. This chapter is an honest
-enumeration of what stands between the current policy and a real Go2, so that
-the gap is documented rather than hand-waved.
+仿真到现实（sim-to-real）**不在本版本的范围之内**。本章如实列举横亘在当前策略与一台真实 Go2 之间的东西，好让这道差距被记录在案，而不是被含糊带过。
 
-The v1 README claimed the policy "directly transfers" the PD architecture and
-the network. That is true of the *architecture*. It is not true of the *policy*,
-and this chapter explains why.
+v1 的 README 声称该策略能“直接迁移”PD 架构和网络。对*架构*而言，这没错。对*策略*而言，这并不成立，本章会解释原因。
 
-## 16.1 The blocking problem: the actor sees what a real robot cannot
+## 16.1 阻断性问题：actor 看到了真实机器人看不到的东西
 
-The observation includes base linear velocity $v_b$ (dimensions 6:9).
+观测中包含机身线速度 $v_b$（第 6:9 维）。
 
-A real Go2 cannot measure it. There is no sensor for the velocity of the trunk
-through the world. What the hardware has is:
+真实的 Go2 测不到它。没有任何传感器能测量躯干相对于世界的速度。硬件上有的是：
 
-- an IMU: linear **acceleration** and angular velocity, both noisy and drifting
-- joint encoders: position and velocity, accurate
-- foot force estimates: derived, noisy
+- IMU：线**加速度**和角速度，两者都有噪声且会漂移
+- 关节编码器：位置和速度，准确
+- 足端力估计：推导得出，有噪声
 
-Getting $v_b$ from those requires integrating accelerometer data, which drifts
-without bound, or a state estimator fusing IMU with leg kinematics during stance
-(this is what Unitree's own stack does). Either way, what the robot actually has
-is an *estimate* with error that grows during flight phases and resets on
-touchdown.
+要从这些量得到 $v_b$，要么对加速度计数据积分——这会无界地漂移；要么用状态估计器在支撑相期间融合 IMU 与腿部运动学（Unitree 自己的软件栈就是这么做的）。无论哪种方式，机器人真正拥有的都只是一个*估计值*，其误差在腾空阶段不断增大，在触地时重置。
 
-A policy trained on ground-truth $v_b$ and deployed on an estimate will behave
-differently in exactly the situations where the estimate is worst — flight
-phases, slips, and impacts. Which are the situations that matter.
+一个用真值 $v_b$ 训练、却在估计值上部署的策略，恰恰会在估计最差的那些情况下表现异常——腾空阶段、打滑和冲击。而这些正是要紧的情况。
 
-### The standard fix: asymmetric actor–critic
+### 标准的修复方法：非对称 actor–critic
 
-Chapter 2, §2.6 introduced this. Give the actor only what hardware can provide,
-and give the critic everything:
+第 2 章 §2.6 介绍过这种方法。只给 actor 硬件能提供的东西，而把一切都给 critic：
 
-| | Actor (deployed) | Critic (training only) |
+| | Actor（部署） | Critic（仅训练时） |
 |---|---|---|
-| projected gravity | yes | yes |
-| angular velocity | yes | yes |
-| **linear velocity** | **no** | yes |
-| joint positions and velocities | yes | yes |
-| previous action | yes | yes |
-| command, gait clock | yes | yes |
-| **friction, payload, push force** | **no** | **yes** |
-| observation history (3–5 frames) | yes | yes |
+| 投影重力 | 是 | 是 |
+| 角速度 | 是 | 是 |
+| **线速度** | **否** | 是 |
+| 关节位置与速度 | 是 | 是 |
+| 上一个动作 | 是 | 是 |
+| 指令、步态时钟 | 是 | 是 |
+| **摩擦、负载、推力** | **否** | **是** |
+| 观测历史（3–5 帧） | 是 | 是 |
 
-The critic's job is prediction, and it is discarded after training, so
-privileged information costs nothing and removes variance that would otherwise
-appear as noise in every advantage estimate.
+critic 的职责是预测，而且训练结束后就会被丢弃，所以特权信息没有任何代价，还能消除原本会以噪声形式出现在每一个优势估计中的方差。
 
-The actor loses information and must compensate with **history**. A stack of the
-last 3–5 observations lets it infer velocity from the integrated
-kinematics — the same information a state estimator would use, learned instead of
-hand-derived.
+actor 失去了信息，必须用**历史**来弥补。把最近 3–5 帧观测堆叠起来，它就能从累积的运动学中推断出速度——这与状态估计器所用的信息相同，只不过是学出来的，而不是手工推导的。
 
-In SB3 this needs a custom policy class with two feature extractors; the
-from-scratch implementation makes it easier, since `ActorCritic.actor` and
-`.critic` are already independent networks and only need different inputs.
+在 SB3 中，这需要一个带两个特征提取器的自定义策略类；从零实现的版本做起来更容易，因为 `ActorCritic.actor` 和 `.critic` 本来就是独立的网络，只需要给它们不同的输入。
 
-## 16.2 Actuator dynamics
+## 16.2 执行器动力学
 
-The current model assumes an ideal torque source: commanded torque appears
-instantly, exactly.
+当前模型假设了一个理想的力矩源：指令力矩会瞬间、精确地出现。
 
-A real Unitree motor has rotor inertia, gearbox friction and backlash, current
-control bandwidth of roughly 1 kHz, and a torque–speed envelope — the available
-torque falls as joint velocity rises, which matters precisely during fast swing.
+真实的 Unitree 电机有转子惯量、齿轮箱摩擦与回差、约 1 kHz 的电流控制带宽，以及力矩–速度包络——可用力矩随关节速度升高而下降，而这恰恰在快速摆动时最要紧。
 
-Three levels of fidelity:
+保真度分三个层次：
 
-1. **Torque-speed limiting.** $\tau_{\max}(\dot q) = \tau_0 (1 - \dot q / \dot q_{\max})$.
-   One line, captures the first-order effect.
-2. **First-order lag.** $\tau_{\text{applied}} = \tau_{\text{applied}} + (\tau_{\text{cmd}} - \tau_{\text{applied}}) \Delta t / T$
-   with $T \approx 5$ ms. Another line.
-3. **A learned actuator network.** Hwangbo et al. (2019) trained a small MLP
-   mapping recent position-error and velocity history to measured torque, from
-   bench data on the real motors, and used it in place of the ideal model. This
-   was the single largest contributor to their successful transfer.
+1. **力矩–速度限制。** $\tau_{\max}(\dot q) = \tau_0 (1 - \dot q / \dot q_{\max})$。一行代码，就能捕捉一阶效应。
+2. **一阶滞后。** $\tau_{\text{applied}} = \tau_{\text{applied}} + (\tau_{\text{cmd}} - \tau_{\text{applied}}) \Delta t / T$，其中 $T \approx 5$ ms。又是一行。
+3. **学习得到的执行器网络。** Hwangbo 等人（2019）用真实电机的台架数据训练了一个小型 MLP，把近期的位置误差和速度历史映射到实测力矩，并用它替代理想模型。这是他们成功实现迁移的最大单一因素。
 
-Levels 1 and 2 are cheap and worth doing regardless. Level 3 requires hardware
-you have to already own.
+第 1、2 层成本很低，无论如何都值得做。第 3 层则要求你手上已经有硬件。
 
-## 16.3 Latency
+## 16.3 延迟
 
-The current loop is instantaneous: observe, act, apply, all at the same instant.
+当前的回路是瞬时的：观测、决策、施加，全都发生在同一时刻。
 
-A real loop has sensor read time, network or bus transport to the compute, policy
-inference, and transport back to the motor drivers. Total is typically 5–20 ms,
-i.e. **0.25 to 1 full control steps at 50 Hz**.
+真实的回路包括传感器读取时间、经网络或总线传输到计算单元、策略推理，以及再传回电机驱动器。总延迟通常为 5–20 ms，也就是 **50 Hz 下 0.25 到 1 个完整控制步**。
 
-A policy trained with zero latency and deployed with 20 ms is acting on
-information one step stale, and the resulting phase lag is exactly what turns a
-stable limit cycle into an oscillation.
+一个在零延迟下训练、却在 20 ms 延迟下部署的策略，是在依据晚了一步的信息行动，由此产生的相位滞后，恰恰会把一个稳定的极限环变成振荡。
 
-The fix is to simulate it — buffer observations by a randomised 1–2 control
-steps — and to randomise the amount, so the policy learns a control law robust
-across the range rather than one tuned to a specific lag.
+解决办法是把它仿真出来——把观测缓冲随机的 1–2 个控制步——并且对延迟量做随机化，让策略学到一条在整个范围内都鲁棒的控制律，而不是针对某个特定滞后调好的控制律。
 
-## 16.4 Observation noise
+## 16.4 观测噪声
 
-`obs_noise_scale` exists in the config and defaults to 0. For real transfer it
-needs to be non-zero and, more importantly, **per-channel**, because the sensors
-differ enormously in quality:
+配置中已有 `obs_noise_scale`，默认值为 0。要真正实现迁移，它必须非零，更重要的是必须**逐通道**设置，因为各个传感器的质量差别极大：
 
-| Channel | Realistic noise |
+| 通道 | 符合实际的噪声 |
 |---|---|
-| joint position | $\sigma \approx 0.005$ rad (encoders are good) |
-| joint velocity | $\sigma \approx 0.5$ rad/s (differentiated, noisy) |
-| projected gravity | $\sigma \approx 0.02$, plus slow drift |
-| angular velocity | $\sigma \approx 0.1$ rad/s, plus bias |
-| linear velocity | dominated by estimator error — see §16.1 |
+| 关节位置 | $\sigma \approx 0.005$ rad（编码器很准） |
+| 关节速度 | $\sigma \approx 0.5$ rad/s（差分得到，噪声大） |
+| 投影重力 | $\sigma \approx 0.02$，外加缓慢漂移 |
+| 角速度 | $\sigma \approx 0.1$ rad/s，外加偏置 |
+| 线速度 | 主要由估计器误差决定——见 §16.1 |
 
-A single scalar applied to a normalised observation, which is what the current
-implementation does, is a placeholder rather than a model.
+对归一化后的观测施加单一标量噪声——这正是当前实现的做法——只是一个占位符，算不上模型。
 
-## 16.5 Contact and terrain
+## 16.5 接触与地形
 
-MuJoCo's contact model is a soft constraint solve. Real contact involves
-compliant rubber feet, surface texture, and stick–slip transitions that no rigid
-solver reproduces exactly.
+MuJoCo 的接触模型是一种软约束求解。真实的接触涉及柔顺的橡胶足端、表面纹理，以及粘滞–滑移转换，没有任何刚体求解器能精确复现这些。
 
-The practical mitigations: randomise friction widely (currently
-$\times[0.4, 1.4]$; for transfer, $[0.25, 1.75]$ is more typical), randomise
-restitution and contact stiffness, and — most importantly — **train on rough
-terrain**. A policy trained only on a plane learns foot placements that assume
-the ground is exactly where it expects. Even mild procedural roughness forces it
-to be robust to a few centimetres of height error, and that robustness is most
-of what real ground looks like.
+实用的缓解手段有：大范围随机化摩擦（目前是 $\times[0.4, 1.4]$；用于迁移时，$[0.25, 1.75]$ 更为典型）、随机化恢复系数和接触刚度，以及——最重要的——**在崎岖地形上训练**。只在平面上训练的策略，学到的落足位置都假设地面恰好在它预期的位置。哪怕是轻微的程序化粗糙地形，也会迫使它对几厘米的高度误差保持鲁棒，而这种鲁棒性，已经涵盖了真实地面的大部分情况。
 
-Terrain is explicitly out of scope for this version. The repository already
-contains `scripts/generate_terrain.py` and `configs/terrain_rough.xml` from v1,
-which are a starting point.
+地形明确不在本版本的范围之内。仓库里已经有来自 v1 的 `scripts/generate_terrain.py` 和 `configs/terrain_rough.xml`，可以作为起点。
 
-## 16.6 Mass and inertia
+## 16.6 质量与惯量
 
-Currently randomised: trunk mass, $+[-1, +2]$ kg.
+目前已随机化：躯干质量，$+[-1, +2]$ kg。
 
-Not randomised, and worth adding: centre-of-mass offset (a real robot carries
-its battery slightly off-centre), link inertias (the CAD-derived tensors in the
-MJCF are idealised), and per-link masses.
+尚未随机化、值得加上的：质心偏移（真实机器人的电池安装位置略偏离中心）、连杆惯量（MJCF 中由 CAD 导出的惯量张量是理想化的），以及各连杆的质量。
 
-The centre-of-mass offset is the one that matters most, because a constant
-attitude bias is exactly the kind of error a policy trained on a symmetric robot
-has no mechanism to correct.
+其中质心偏移最重要，因为恒定的姿态偏差，恰恰是在对称机器人上训练的策略没有任何机制去纠正的那类误差。
 
-## 16.7 What is already right
+## 16.7 已经做对的部分
 
-Worth stating, because the list above is long.
+值得一提，因为上面的清单实在很长。
 
-**The action interface.** The policy outputs joint position targets fed to a PD
-controller — exactly what Unitree's low-level API accepts. No re-derivation
-needed.
+**动作接口。** 策略输出关节位置目标，送入 PD 控制器——这正是 Unitree 底层 API 所接受的形式。无需重新推导。
 
-**The PD gains are realistic.** $k_p = 55$, $k_d = 1.4$ are in the range real
-Go2 controllers use, and were chosen from a sag measurement (chapter 8, §8.5)
-rather than picked to make simulation easy. A policy trained against
-$k_p = 500$ would look great in sim and be undeployable.
+**PD 增益是符合实际的。** $k_p = 55$、$k_d = 1.4$ 处在真实 Go2 控制器所用的范围内，而且是根据下沉量测量（第 8 章 §8.5）选出来的，而不是为了让仿真变得容易而随手挑的。一个针对 $k_p = 500$ 训练的策略，在仿真里会看起来很棒，却根本无法部署。
 
-**The control rate matches.** 50 Hz is what real quadruped policies run at.
+**控制频率一致。** 50 Hz 正是真实四足策略运行的频率。
 
-**Torque limits are enforced.** 23.7 / 45.4 N·m, from the model, clipped every
-substep. The policy cannot learn a gait that requires impossible torque.
+**力矩限制得到了强制执行。** 23.7 / 45.4 N·m，取自模型，每个子步都会裁剪。策略不可能学到一个需要不可能达到的力矩的步态。
 
-**The nominal pose is the manufacturer's.** After B1, `default_joint_pos` is the
-model's own `home` keyframe.
+**名义姿态来自制造商。** 修复 B1 之后，`default_joint_pos` 就是模型自带的 `home` 关键帧。
 
-**Domain randomisation exists** and is structured to be widened rather than
-added from scratch.
+**域随机化已经存在**，而且其结构便于扩大范围，而不必从头添加。
 
-## 16.8 The order to do it in
+## 16.8 按什么顺序做
 
-If you were to take this to hardware:
+如果你要把它搬到硬件上：
 
-1. **Remove $v_b$ from the actor**, add observation history, add an asymmetric
-   critic. Nothing else matters until the policy runs on observable quantities.
-2. **Add latency** (1–2 randomised control steps) and per-channel observation
-   noise.
-3. **Add actuator lag and a torque–speed envelope.**
-4. **Widen domain randomisation** — friction, CoM offset, link masses.
-5. **Add rough terrain.**
-6. **Then** consider an actuator network, which requires bench data from the
-   real motors.
+1. **从 actor 中移除 $v_b$**，加入观测历史，加入非对称 critic。在策略能基于可观测量运行之前，其他一切都无关紧要。
+2. **加入延迟**（随机的 1–2 个控制步）和逐通道的观测噪声。
+3. **加入执行器滞后和力矩–速度包络。**
+4. **扩大域随机化范围**——摩擦、质心偏移、连杆质量。
+5. **加入崎岖地形。**
+6. **然后**再考虑执行器网络，这需要真实电机的台架数据。
 
-Steps 1–5 are simulation work and are perhaps a week. Step 6 needs hardware.
+第 1–5 步都是仿真工作，大概一周。第 6 步需要硬件。
 
-Expect the policy to get *worse* in simulation at every step. That is the point:
-a policy that scores lower in a harder, more honest simulation is more likely to
-work outside it.
+预计每做一步，策略在仿真中的表现都会*变差*。这正是关键所在：一个在更难、更诚实的仿真中得分更低的策略，更有可能在仿真之外奏效。
 
-## 16.9 The honest summary
+## 16.9 诚实的总结
 
-The current policy would not walk on a real Go2, primarily because of §16.1 — it
-depends on a velocity signal the robot does not have. Everything else on the
-list is a degradation; that one is a wall.
+当前策略无法在真实的 Go2 上行走，主要原因就是 §16.1——它依赖一个机器人并不具备的速度信号。清单上的其他各项只会让性能打折扣；而这一项是一堵墙。
 
-None of this is a criticism of the current version. Sim-to-real was scoped out
-deliberately, and the design decisions reflect that: the actor is *allowed*
-privileged information, which is why asymmetric actor–critic buys nothing here
-(chapter 2, §2.6). The moment you remove $v_b$, most of this chapter becomes the
-next piece of work.
+这些都不是对当前版本的批评。仿真到现实是被有意排除在范围之外的，设计决策也反映了这一点：actor *被允许*使用特权信息，这也是为什么非对称 actor–critic 在这里带不来任何好处（第 2 章 §2.6）。一旦你移除 $v_b$，本章的大部分内容就成了下一步的工作。
 
 ---
 
-**Previous:** [15. Results](15-results.md) ·
-**Next:** [17. Scaling with MJX](17-mjx-and-scaling.md)
+**上一章：** [15. 结果](15-results.md) · **下一章：** [17. 用 MJX 扩展规模](17-mjx-and-scaling.md)

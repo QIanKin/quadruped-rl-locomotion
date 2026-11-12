@@ -1,91 +1,61 @@
-# 11. Gaits, phase, and periodic control
+# 11. 步态、相位与周期控制
 
-Locomotion is a limit cycle. Nothing in the MDP formulation of chapter 1 prefers
-periodic solutions, and a policy handed a velocity-tracking reward will find
-whatever aperiodic, twitching motion tracks velocity most cheaply. This chapter
-is about putting the periodicity in on purpose.
+运动是一个极限环。第 1 章的 MDP 表述中没有任何东西偏好周期性解，而一个拿到速度跟踪奖励的策略，会找到任何能以最低代价跟踪速度的非周期、抽搐式动作。本章讲的就是如何有意地把周期性放进去。
 
-## 11.1 What a gait is
+## 11.1 步态是什么
 
-A **gait** is a repeating pattern of foot contacts. Two numbers describe it.
+**步态**是一种重复的足端接触模式。两个数就能描述它。
 
-**Duty factor** $\beta$ — the fraction of a stride cycle that a given foot spends
-in stance (on the ground). $\beta = 0.5$ means half stance, half swing.
-$\beta = 0.75$ means three-quarters stance. $\beta > 0.5$ for all four feet
-implies at least two feet are always down; $\beta < 0.5$ implies there are
-moments of flight.
+**占空比** $\beta$ —— 某只足在一个步态周期中处于支撑相（着地）的时间比例。$\beta = 0.5$ 表示一半支撑、一半摆动。$\beta = 0.75$ 表示四分之三支撑。四只足都满足 $\beta > 0.5$ 意味着任何时刻至少有两只足着地；$\beta < 0.5$ 则意味着存在腾空的时刻。
 
-**Phase offsets** $\theta_i$ — where in the cycle each foot's stance begins,
-measured in fractions of a cycle from a reference foot.
+**相位偏移** $\theta_i$ —— 每只足的支撑相从周期中的何处开始，以相对于参考足的周期分数来度量。
 
-With the foot ordering (FL, FR, RL, RR) used throughout this repository:
+采用本仓库通篇使用的足端顺序（FL, FR, RL, RR）：
 
-| Gait | Offsets $(\theta_{FL}, \theta_{FR}, \theta_{RL}, \theta_{RR})$ | $\beta$ | Description |
+| 步态 | 偏移 $(\theta_{FL}, \theta_{FR}, \theta_{RL}, \theta_{RR})$ | $\beta$ | 描述 |
 |---|---|---|---|
-| **trot** | $(0, \tfrac12, \tfrac12, 0)$ | 0.5 | diagonal pairs together |
-| **pace** | $(0, \tfrac12, 0, \tfrac12)$ | 0.5 | lateral pairs together |
-| **bound** | $(0, 0, \tfrac12, \tfrac12)$ | 0.5 | front pair, then rear pair |
-| **walk** | $(0, \tfrac12, \tfrac14, \tfrac34)$ | 0.75 | four-beat; three feet always down |
-| **pronk** | $(0,0,0,0)$ | 0.5 | all four together |
-| **stand** | $(0,0,0,0)$ | 1.0 | never lift a foot |
+| **小跑（trot）** | $(0, \tfrac12, \tfrac12, 0)$ | 0.5 | 对角两足同步 |
+| **溜蹄（pace）** | $(0, \tfrac12, 0, \tfrac12)$ | 0.5 | 同侧两足同步 |
+| **跳跃步（bound）** | $(0, 0, \tfrac12, \tfrac12)$ | 0.5 | 先前两足，再后两足 |
+| **慢步（walk）** | $(0, \tfrac12, \tfrac14, \tfrac34)$ | 0.75 | 四拍；始终有三只足着地 |
+| **四足齐跳（pronk）** | $(0,0,0,0)$ | 0.5 | 四足同步 |
+| **站立（stand）** | $(0,0,0,0)$ | 1.0 | 从不抬足 |
 
-The **trot** is the default and by far the most stable for a robot of the Go2's
-proportions. Its diagonal support line passes close to the centre of mass, so
-the unsupported moment during each half-cycle is small. The **pace** puts both
-support feet on one side and rolls the body. The **bound** pitches it.
+**小跑**是默认步态，对于 Go2 这种身体比例的机器人来说，也是迄今为止最稳定的步态。它的对角支撑线从质心附近穿过，因此每个半周期中失去支撑的力矩很小。**溜蹄**把两只支撑足都放在同一侧，会让机身横滚。**跳跃步**则会让机身俯仰。
 
-Real animals switch gaits with speed — walk, trot, canter, gallop — for energetic
-reasons (Hoyt & Taylor, 1981: horses select the gait that minimises metabolic
-cost at each speed). This repository trains the trot by default and provides the
-others as commandable alternatives; automatic speed-dependent gait selection is
-not implemented, and §11.8 says what it would take.
+真实动物会随速度切换步态——慢步、小跑、慢跑（canter）、飞奔（gallop）——原因在于能量（Hoyt & Taylor, 1981：马在每个速度下都会选择代谢成本最低的步态）。本仓库默认训练小跑，并把其他步态作为可通过指令切换的备选；随速度自动选择步态并未实现，§11.9 说明了实现它需要什么。
 
-## 11.2 Why a gait must be imposed rather than hoped for
+## 11.2 为什么步态必须强加，而不能指望它自己出现
 
-The obvious approach is to reward velocity tracking, penalise energy, and let a
-gait emerge. This does sometimes work, and it produces gaits that are
-technically efficient and visibly wrong: asymmetric limps, three-legged
-shuffles, a hop with one leg dragging. All of these can track a velocity
-command at a reasonable torque cost.
+显而易见的做法是：奖励速度跟踪、惩罚能耗，然后让步态自己涌现。这有时确实行得通，而它产生的步态在技术上很高效，看起来却明显不对：不对称的跛行、三条腿的拖步、拖着一条腿的蹦跳。所有这些都能以合理的力矩代价跟踪速度指令。
 
-There are three concrete reasons to specify the gait instead.
+有三个具体理由让我们改为显式指定步态。
 
-**The reward has no term for "periodic".** Velocity tracking is a statement
-about a single instant. Energy is a sum over instants. Neither has any
-preference for a repeating structure, so nothing selects one.
+**奖励里没有“周期性”这一项。** 速度跟踪是关于单个瞬间的陈述。能耗是各个瞬间的总和。两者都不偏好重复的结构，所以没有任何东西会把它选出来。
 
-**Exploration cannot find the limit cycle.** A trot is a coordinated
-four-limb pattern. Random exploration around a standing pose reaches it only by
-a coincidence of twelve joints, and the intermediate states — one foot lifted,
-the robot toppling — are punished. This is exactly the barrier described in
-chapter 10, §10.4.
+**探索找不到这个极限环。** 小跑是一种四肢协调的模式。在站立姿态附近随机探索，只有靠十二个关节的巧合才能到达它，而中间状态——一只足抬起、机器人倾倒——都会受到惩罚。这正是第 10 章 §10.4 中描述的那道壁垒。
 
-**Emergent gaits are not controllable.** If the gait is whatever the optimiser
-found, you cannot ask for a different one, or a different step frequency,
-without retraining.
+**涌现出来的步态不可控。** 如果步态就是优化器碰巧找到的那一个，你就无法在不重新训练的情况下要求换一种步态，或者换一个步频。
 
-## 11.3 The phase clock
+## 11.3 相位时钟
 
-Introduce a scalar $\phi \in [0, 1)$ advancing at the commanded step frequency
-$f$:
+引入一个标量 $\phi \in [0, 1)$，它以指令步频 $f$ 推进：
 
 $$
 \phi_{t+1} = \big(\phi_t + f \Delta t\big) \bmod 1
 \tag{11.1}
 $$
 
-At $f = 2$ Hz and $\Delta t = 0.02$ s, $\phi$ advances by 0.04 per control step
-and completes a cycle in 25 steps.
+在 $f = 2$ Hz、$\Delta t = 0.02$ s 时，$\phi$ 每个控制步推进 0.04，25 步完成一个周期。
 
-Each foot's **local phase** is $\phi$ shifted by its offset, and the schedule
-says a foot should be in stance while its local phase is inside the duty window:
+每只足的**局部相位**是 $\phi$ 加上它的偏移量，而时间表规定：当某只足的局部相位落在占空窗口内时，它应当处于支撑相：
 
 $$
 d_i(\phi) = \mathbb{1}\Big[ \big(\phi + \theta_i\big) \bmod 1 < \beta \Big]
 \tag{11.2}
 $$
 
-That is the entire mechanism. Eleven lines in `envs/gait.py`:
+这就是全部机制。`envs/gait.py` 中的十一行代码：
 
 ```python
 def advance_phase(phase, frequency, dt):
@@ -96,8 +66,7 @@ def desired_contact(phase, offsets, duty):
     return xp.where(local_phase < duty, 1.0, 0.0)
 ```
 
-A useful sanity check, and a test: averaged over a full cycle, each foot's
-desired contact must equal the duty factor exactly.
+一个有用的健全性检查，同时也是一个测试：在一个完整周期上取平均，每只足的期望接触必须恰好等于占空比。
 
 $$
 \frac{1}{1}\int_0^1 d_i(\phi)\mathrm{d}\phi = \beta
@@ -110,144 +79,89 @@ def test_duty_factor_is_the_stance_fraction():
     assert np.allclose(samples.mean(axis=0), duty, atol=2e-3)
 ```
 
-## 11.4 The phase reward
+## 11.4 相位奖励
 
 $$
 r_\text{gait} = \frac{1}{4} \sum_{i=1}^{4} \Big[ c_i d_i + (1 - c_i)(1 - d_i) \Big]
 \tag{11.3}
 $$
 
-$c_i$ is the measured contact, $d_i$ the scheduled one. The bracket is 1 when
-they agree and 0 when they do not, so $r_\text{gait}$ is the fraction of feet
-currently doing the right thing. Bounded in $[0, 1]$.
+$c_i$ 是测得的接触，$d_i$ 是时间表规定的接触。两者一致时括号内为 1，不一致时为 0，所以 $r_\text{gait}$ 就是当前做对了的足所占的比例。它有界，取值在 $[0, 1]$ 内。
 
-Compare to v1's $|c_{FL}c_{RR} - c_{FR}c_{RL}|$ (chapter 10, §10.6), which a
-motionless robot maximised forever. The difference is not a better contact
-expression — no function of $\mathbf{c}$ alone can express alternation, because
-alternation is a property of a sequence. The difference is the introduction of
-$\mathbf{d}$: a **time-varying reference**. Once you have that, the reward
-becomes a trivial agreement measure and the interesting content has moved into
-the clock.
+对比 v1 的 $|c_{FL}c_{RR} - c_{FR}c_{RL}|$（第 10 章 §10.6），一台纹丝不动的机器人可以永远把它最大化。区别不在于换了一个更好的接触表达式——任何仅关于 $\mathbf{c}$ 的函数都无法表达交替，因为交替是序列的性质。区别在于引入了 $\mathbf{d}$：一个**时变的参考**。一旦有了它，奖励就变成了一个平凡的一致性度量，而真正有意思的内容转移到了时钟里。
 
-What a frozen robot now scores: under a trot schedule with $\beta = 0.5$, a
-robot standing on all four feet matches the two feet that are supposed to be in
-stance and mismatches the two that are supposed to be swinging, every step, for
-$r_\text{gait} = 0.5$. A robot frozen on one diagonal pair also averages 0.5.
-There is no stationary configuration that scores above 0.5, and every step in
-the right direction pays immediately — lifting one correct foot takes it to
-0.75.
+一台僵住不动的机器人现在能得多少分：在 $\beta = 0.5$ 的小跑时间表下，四足着地站立的机器人，每一步都与应处于支撑相的两只足相符、与应处于摆动相的两只足不符，得 $r_\text{gait} = 0.5$。僵在一对对角足上的机器人，平均下来也是 0.5。不存在任何得分高于 0.5 的静止构型，而每朝正确方向迈出一步都能立刻得到回报——抬起一只该抬的足，分数就升到 0.75。
 
-### It is necessary but not sufficient
+### 它是必要的，但不充分
 
-Equation 11.3 is built on a **binary** contact flag, so it is piecewise
-constant: it does not change at all until a foot physically breaks contact. For
-a policy that has never stepped, the gradient toward stepping is exactly zero.
+式 11.3 建立在一个**二值**接触标志之上，因此是分段常数：在足端真正脱离接触之前，它完全不会变化。对一个从未迈过步的策略来说，朝向迈步的梯度恰好为零。
 
-That is why the reward set also contains `feet_clearance`, a smooth cost on
-swing-foot height (chapter 10, §10.4b). The two do different jobs: clearance
-gets the foot off the ground, the phase reward gets it off the ground *at the
-right time*. A 1.1M-step run stalled with only the latter.
+这就是为什么奖励集合中还包含 `feet_clearance`——一个关于摆动足高度的平滑代价（第 10 章 §10.4b）。两者分工不同：抬足高度项让足离开地面，相位奖励让它在*正确的时间*离开地面。一次只有后者的 1.1M 步训练运行就停滞了。
 
-### Why this term is weighted so heavily
+### 为什么这一项权重这么大
 
-`gait_phase` has weight 1.5, equal to velocity tracking, because it is the term
-that supplies the *timing*. Nothing else in the reward set says when a foot
-should be down:
+`gait_phase` 的权重是 1.5，与速度跟踪相同，因为它是提供*时机*的那一项。奖励集合中没有其他任何一项说明一只足什么时候应该着地：
 
-- `track_lin_vel_xy` rewards the **result** of walking, which is undiscoverable
-  until you already walk.
-- `feet_air_time` pays at touchdown, so it is exactly zero for a robot that has
-  never stepped.
-- `feet_clearance` pays for raising a swing foot, but says nothing about *which*
-  foot or *when* — on its own it would produce four independent legs waving.
+- `track_lin_vel_xy` 奖励的是行走的**结果**，在你已经会走之前，这个结果根本发现不了。
+- `feet_air_time` 在触地时才给奖励，所以对一台从未迈过步的机器人来说，它恰好为零。
+- `feet_clearance` 为抬起摆动足付费，但不说明是*哪只*足、*什么时候*抬——单靠它，只会得到四条各自独立乱挥的腿。
 
-So the three stepping terms decompose cleanly: clearance gets a foot off the
-ground, the phase reward gets it off the ground at the right moment, and air
-time makes the resulting stride a real one. Under-weighting the phase reward
-cost half a million steps of training in this repository; omitting the clearance
-term cost another million.
+于是这三个迈步项分工明确：抬足高度项让足离地，相位奖励让它在正确的时刻离地，腾空时间项则让由此产生的步态周期成为真正的一步。在本仓库中，相位奖励权重过低让训练白白耗费了五十万步；漏掉抬足高度项又耗费了一百万步。
 
-## 11.5 The clock has to be in the observation
+## 11.5 时钟必须出现在观测中
 
 $$
 o_{48:50} = \big(\sin 2\pi\phi, \quad \cos 2\pi\phi\big)
 $$
 
-Without this the phase reward is unlearnable. From the policy's point of view,
-two states with identical joint angles, velocities and attitude would receive
-different rewards for the same action depending on an invisible variable — which
-is the definition of a non-Markov observation, and it appears to the learner as
-irreducible noise.
+没有它，相位奖励就无法学习。从策略的角度看，两个关节角度、速度和姿态完全相同的状态，对同一个动作却会因为一个看不见的变量而得到不同的奖励——这正是非马尔可夫观测的定义，在学习者看来，它表现为不可约的噪声。
 
-The $(\sin, \cos)$ embedding rather than raw $\phi$: the phase is **circular**.
-$\phi = 0.99$ and $\phi = 0.01$ are 0.02 apart in time and 0.98 apart as real
-numbers. A network fed raw $\phi$ sees a discontinuity once per stride, right at
-the point where two feet are swapping roles.
+之所以用 $(\sin, \cos)$ 嵌入而不是原始的 $\phi$，是因为相位是**环形的**。$\phi = 0.99$ 和 $\phi = 0.01$ 在时间上相距 0.02，作为实数却相距 0.98。直接喂入原始 $\phi$ 的网络每个步态周期都会看到一次不连续，而且恰好出现在两只足交换角色的那一刻。
 
-Only the *global* clock is in the observation, not the per-foot phases. With
-`gaits: ["trot"]` the offsets are constant, so the network absorbs them into its
-weights. §11.8 covers what changes for multiple gaits.
+观测中只有*全局*时钟，没有每只足各自的相位。在 `gaits: ["trot"]` 下偏移量是常数，所以网络会把它们吸收进权重里。§11.8 讨论多种步态时会有什么变化。
 
-## 11.6 Step frequency as a command
+## 11.6 把步频作为指令
 
-$f$ appears in equation 11.1 and is sampled per episode from
-$[1.5, 3.0]$ Hz. Because it changes how fast the clock the policy observes
-advances, the policy learns to step faster or slower on demand, with no
-architectural change.
+$f$ 出现在式 11.1 中，每个回合从 $[1.5, 3.0]$ Hz 中采样。由于它改变了策略所观测的时钟推进的快慢，策略就学会了按需加快或放慢步伐，而无需任何架构上的改动。
 
-There is real physics behind the range. A pendulum of length $L$ has natural
-frequency $\sqrt{g/L}/2\pi$; for the Go2's 0.213 m thigh plus 0.213 m calf,
-$L \approx 0.3$ m gives $\approx 0.9$ Hz for a full swing, so a 2 Hz stride
-(0.5 s per cycle, 0.25 s of swing per foot at $\beta = 0.5$) is a comfortable
-multiple. Below about 1.2 Hz the robot has to hold each foot up unnaturally
-long; above about 3.5 Hz the swing becomes torque-limited.
+这个范围背后有真实的物理依据。长度为 $L$ 的摆，固有频率为 $\sqrt{g/L}/2\pi$；对于 Go2 的 0.213 m 大腿加 0.213 m 小腿，取 $L \approx 0.3$ m，得到完整摆动一次的频率 $\approx 0.9$ Hz，因此 2 Hz 的步态周期（每周期 0.5 s，在 $\beta = 0.5$ 时每只足摆动 0.25 s）是一个舒适的倍数。低于约 1.2 Hz 时，机器人不得不把每只足不自然地抬很久；高于约 3.5 Hz 时，摆动会受到力矩限制。
 
-`scripts/play.py` binds `[` and `]` to step frequency so you can feel this.
+`scripts/play.py` 把 `[` 和 `]` 绑定到步频调节上，你可以亲手感受一下。
 
-## 11.7 Measuring what you got
+## 11.7 测量你实际得到了什么
 
-`scripts/gait_analysis.py` records a rollout and reports:
+`scripts/gait_analysis.py` 会录制一段 rollout 并报告：
 
-- **duty factor** per foot, versus the commanded $\beta$
-- **stride frequency** per foot, from touchdown intervals, versus commanded $f$
-- **phase offsets** relative to FL, versus the reference $\theta_i$
-- **schedule match** — the fraction of steps where $c_i = d_i$, which is
-  numerically the same quantity as equation 11.3
+- 每只足的**占空比**，与指令 $\beta$ 对比
+- 每只足的**步态周期频率**，由触地间隔计算，与指令 $f$ 对比
+- 相对 FL 的**相位偏移**，与参考 $\theta_i$ 对比
+- **时间表匹配度**——满足 $c_i = d_i$ 的步数所占比例，在数值上与式 11.3 是同一个量
 
-and plots the commanded schedule directly above the measured contacts, so
-disagreement is visible rather than inferred.
+并把指令时间表直接画在测得的接触正上方，这样不一致之处一目了然，而不必靠推断。
 
-The interpretations worth knowing:
+值得了解的几种解读：
 
-| Symptom | Likely cause |
+| 症状 | 可能原因 |
 |---|---|
-| duty factor well above the reference | shuffling: feet toggle on cue without real swing. Raise `feet_air_time` |
-| schedule match below 0.7 | `gait_phase` under-weighted, or $f$ outside the trained range |
-| measured offsets do not match the reference | the policy is running a *different* gait from the one commanded |
-| match high but velocity tracking poor | the policy is marching on the spot |
+| 占空比远高于参考值 | 拖步：足端按节拍切换接触，却没有真正的摆动。提高 `feet_air_time` |
+| 时间表匹配度低于 0.7 | `gait_phase` 权重过低，或 $f$ 超出了训练范围 |
+| 测得的偏移与参考不符 | 策略执行的是一种与指令*不同*的步态 |
+| 匹配度高但速度跟踪差 | 策略在原地踏步 |
 
-Each of these is printed as a note by the script, so you do not have to remember
-the table.
+脚本会把每一条都作为提示打印出来，所以你不必记住这张表。
 
-## 11.8 Training more than one gait
+## 11.8 训练不止一种步态
 
-The config ships `gaits: ["trot"]`. To train a policy that can trot, pace and
-bound on command:
+配置默认是 `gaits: ["trot"]`。要训练一个能按指令小跑、溜蹄和跳跃步的策略：
 
 ```yaml
 commands:
   gaits: ["trot", "pace", "bound", "walk"]
 ```
 
-That alone is not sufficient, and it is worth being clear about why. With one
-gait the offsets $\theta_i$ are constant, so the policy can infer the whole
-schedule from $\phi$ alone. With several, the same $\phi$ implies different
-$\mathbf{d}$ depending on which gait is active, and the gait identity is
-**not currently in the observation**. The policy would be trying to satisfy a
-schedule it cannot see.
+仅此还不够，而且值得把原因讲清楚。只有一种步态时，偏移量 $\theta_i$ 是常数，策略单凭 $\phi$ 就能推断出整个时间表。有多种步态时，同一个 $\phi$ 会因当前激活的步态不同而对应不同的 $\mathbf{d}$，而步态身份**目前并不在观测中**。策略将试图满足一个它看不到的时间表。
 
-The fix is to give it the per-foot clock instead of the global one.
-`envs/gait.py` already provides it:
+解决办法是给它每只足各自的时钟，而不是全局时钟。`envs/gait.py` 已经提供了这个功能：
 
 ```python
 def clock_signal(phase, offsets):
@@ -255,40 +169,24 @@ def clock_signal(phase, offsets):
     return xp.concatenate([xp.sin(local), xp.cos(local)])
 ```
 
-Eight numbers instead of two, and the gait becomes fully specified by the
-observation. `Go2Env._get_obs` and `obs_dim` change by two lines. The
-alternative — a one-hot gait ID — works too but generalises worse, since the
-clock representation lets you interpolate to offsets never seen in training.
+用八个数代替两个数，步态就完全由观测确定了。`Go2Env._get_obs` 和 `obs_dim` 只需改两行。另一种方案——独热（one-hot）步态 ID——同样可行，但泛化更差，因为时钟表示允许你插值到训练中从未见过的偏移量。
 
-An honest caveat: pace and bound are genuinely harder than trot, and mixing them
-in from the start slows trot learning. Train trot first, then fine-tune with the
-wider gait set.
+一个诚实的提醒：溜蹄和跳跃步确实比小跑更难，从一开始就把它们混进来会拖慢小跑的学习。先训练小跑，再用更宽的步态集合进行微调。
 
-## 11.9 What this does not do
+## 11.9 这里没有做什么
 
-**No automatic gait selection.** The gait is commanded, not chosen. A policy that
-picks its own gait by speed would need either a discrete action for the gait or a
-higher-level policy; the standard trick is to make $f$ and $\beta$ continuous
-actions and let the energy penalty select them, which is close to what Hoyt and
-Taylor observed in horses.
+**没有自动步态选择。** 步态是由指令给定的，而不是策略自己选的。一个按速度自行挑选步态的策略，要么需要一个用于选择步态的离散动作，要么需要一个更高层的策略；标准技巧是把 $f$ 和 $\beta$ 作为连续动作，让能耗惩罚来选择它们，这与 Hoyt 和 Taylor 在马身上观察到的现象很接近。
 
-**No foot-placement planning.** The schedule says *when* a foot should be down,
-never *where*. The policy decides placement implicitly through joint targets. On
-flat ground this is fine. On rough terrain you want a Raibert-style heuristic —
-place the foot at
+**没有落足规划。** 时间表只说一只足*何时*应该着地，从不说*在哪里*。策略通过关节目标隐式地决定落足位置。在平地上这没问题。在崎岖地形上，你会需要一个 Raibert 式的启发式规则——把足放在
 
 $$
 \mathbf{p}_i^* = \mathbf{p}_i^{\text{hip}} + \frac{\beta T}{2}\mathbf{v} + k(\mathbf{v} - \mathbf{v}^*)
 $$
 
-(hip position, plus half a stance duration of travel, plus a velocity-error
-correction) — as a reference for a foot-position reward.
+（髋关节位置，加上半个支撑相时长内的行进距离，再加上一个速度误差修正项）——作为足端位置奖励的参考。
 
-**No aerial-phase control.** With $\beta = 0.5$ and a real trot, there are
-moments with no feet down. Nothing here explicitly manages flight time; it falls
-out of the dynamics.
+**没有腾空相控制。** 在 $\beta = 0.5$ 的真实小跑中，存在没有任何足着地的时刻。这里没有任何东西显式地管理腾空时间；它是动力学自然产生的结果。
 
 ---
 
-**Previous:** [10. Reward engineering](10-reward-engineering.md) ·
-**Next:** [12. Curriculum and domain randomisation](12-curriculum-and-domain-randomization.md)
+**上一章：** [10. 奖励工程](10-reward-engineering.md) · **下一章：** [12. 课程学习与域随机化](12-curriculum-and-domain-randomization.md)

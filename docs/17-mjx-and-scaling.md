@@ -1,22 +1,19 @@
-# 17. Scaling with MJX
+# 17. 用 MJX 扩展规模
 
-Sixteen CPU environments is the wrong shape for this problem. This chapter
-measures why, and describes the path to the right one.
+十六个 CPU 环境，对这个问题来说是错误的形态。本章测量其原因，并描述通往正确形态的路径。
 
-## 17.1 The measurement
+## 17.1 测量
 
-Benchmarked on the development machine (8 physical cores, 12 logical), MuJoCo
-3.12, PyTorch 2.13 CPU:
+在开发机上做基准测试（8 个物理核心，12 个逻辑核心），MuJoCo 3.12，PyTorch 2.13 CPU 版：
 
-**Environment alone** (no policy, no learning):
+**仅环境**（无策略，无学习）：
 
-| | steps/s |
+| | 每秒步数 |
 |---|---|
-| before optimisation | 392 |
-| after replacing `np.cross` and caching the frame conversions | **810** |
+| 优化前 | 392 |
+| 替换 `np.cross` 并缓存坐标系转换之后 | **810** |
 
-The 2.07× came from a single profiling session and is worth recording, because
-the culprit is not where you would guess:
+这 2.07× 的提升来自一次性能剖析，值得记录下来，因为罪魁祸首并不在你会猜的地方：
 
 ```
    ncalls  tottime  cumtime  function
@@ -26,91 +23,67 @@ the culprit is not where you would guess:
     84036    0.806    2.986  numpy._core.numeric.moveaxis
 ```
 
-**`np.cross` cost more wall-clock time than the physics.** It is a fully general
-$n$-dimensional routine that calls `moveaxis` and `normalize_axis_tuple` on
-every invocation, and the environment called it fourteen times per control step
-on 3-element vectors. Writing out the six multiplications explicitly, and
-caching the three frame conversions that the observation, the reward and the
-termination check all wanted separately, doubled throughput.
+**`np.cross` 花掉的墙钟时间比物理仿真还多。** 它是一个完全通用的 $n$ 维例程，每次调用都要调用 `moveaxis` 和 `normalize_axis_tuple`，而环境在每个控制步里要对 3 元素向量调用它十四次。显式写出那六次乘法，再把观测、奖励和终止检查各自分别需要的三次坐标系转换缓存起来，吞吐量就翻了一番。
 
-**End-to-end training**, including the PPO update:
+**端到端训练**，包括 PPO 更新：
 
-| envs | vec backend | steps/s |
+| 环境数 | 向量化后端 | 每秒步数 |
 |---|---|---|
 | 4 | subproc | 382 |
 | 6 | subproc | 486 |
 | 8 | subproc | 533 |
 | 10 | subproc | 571 |
-| 10 | **dummy** (in-process) | 290 |
+| 10 | **dummy**（进程内） | 290 |
 | 16 | subproc | **616** |
 
-Two things to notice.
+有两点值得注意。
 
-**Scaling is badly sublinear.** One environment alone does 810 steps/s; sixteen
-in parallel do 616 *in total*. Adding fifteen environments made the system
-slower per environment by a factor of twenty.
+**扩展性严重低于线性。** 单个环境能跑 810 steps/s；十六个并行*总共*才 616。多加十五个环境，让每个环境的速度慢了二十倍。
 
-**`SubprocVecEnv` beats `DummyVecEnv` here**, despite the Windows pipe overhead,
-which tells you the bottleneck is genuine CPU contention rather than
-serialisation. Both numbers are worth having; `--vec-env` exposes the choice so
-you can benchmark on your own machine rather than trusting this table.
+**在这里 `SubprocVecEnv` 胜过 `DummyVecEnv`**，尽管有 Windows 管道的开销——这说明瓶颈是真实的 CPU 争用，而不是序列化。两个数字都值得掌握；`--vec-env` 把这个选择暴露了出来，让你可以在自己的机器上做基准测试，而不是轻信这张表。
 
-## 17.2 What this means for a training run
+## 17.2 这对一次训练运行意味着什么
 
-At 616 steps/s:
+以 616 steps/s 计：
 
-| Budget | Wall clock |
+| 预算 | 墙钟时间 |
 |---|---|
-| 1M steps | 27 minutes |
-| 10M steps | 4.5 hours |
-| 50M steps | 22.5 hours |
+| 1M 步 | 27 分钟 |
+| 10M 步 | 4.5 小时 |
+| 50M 步 | 22.5 小时 |
 
-For comparison, the legged-locomotion literature (Rudin et al., *Learning to
-Walk in Minutes*, 2021) trains comparable policies in **under twenty minutes**,
-using 4096 parallel environments on a single GPU. The difference is not the
-algorithm — it is PPO in both cases — it is that the simulation runs on the GPU
-alongside the policy.
+作为对比，足式运动领域的文献（Rudin 等人，*Learning to Walk in Minutes*，2021）在**不到二十分钟**内就能训练出相当的策略，用的是单块 GPU 上的 4096 个并行环境。差别不在算法——两者用的都是 PPO——而在于仿真和策略一起跑在 GPU 上。
 
-## 17.3 Why CPU parallelism runs out
+## 17.3 为什么 CPU 并行会走到尽头
 
-Each CPU environment is a separate process running a serial rigid-body solve.
-The costs that do not go away:
+每个 CPU 环境都是一个独立的进程，运行着串行的刚体求解。那些无法消除的开销：
 
-- **Contact solving is serial per environment** and does not vectorise across
-  environments in the CPU MuJoCo build.
-- **Eight physical cores.** Beyond eight workers you are timeslicing.
-- **Every step crosses a process boundary.** Observations are pickled, written
-  to a pipe, and read back, sixteen times per vectorised step.
-- **The policy forward pass is a batch of 16.** A GPU is idle at that size; even
-  a CPU is barely warmed up. Almost all the arithmetic capacity of the machine
-  is unused.
+- **接触求解在每个环境内是串行的**，在 CPU 版 MuJoCo 中无法跨环境向量化。
+- **只有八个物理核心。** 超过八个 worker，你就是在做时间片轮转。
+- **每一步都要跨越进程边界。** 观测要被 pickle 序列化、写入管道、再读回来，每个向量化步都要这样做十六次。
+- **策略前向传播的批量只有 16。** 在这个规模下 GPU 是闲置的；连 CPU 都几乎还没热身。机器的绝大部分算力都没有用上。
 
-The last point is the real one. The hardware is capable of thousands of
-simultaneous rigid-body solves; the architecture asks it for sixteen.
+最后一点才是真正的问题。硬件能同时进行数千个刚体求解，而这个架构只要求它做十六个。
 
 ## 17.4 MJX
 
-MJX is MuJoCo re-implemented in JAX. The physics becomes a pure function that
-`jax.vmap` maps across a batch and `jax.jit` compiles to GPU kernels. Instead of
-$N$ processes each stepping one robot, you get one program stepping $N$ robots as
-a batched tensor operation.
+MJX 是用 JAX 重新实现的 MuJoCo。物理仿真变成了一个纯函数，由 `jax.vmap` 映射到整个批量上，再由 `jax.jit` 编译成 GPU 内核。不再是 $N$ 个进程各自推进一个机器人，而是一个程序以批量张量运算的方式同时推进 $N$ 个机器人。
 
-The consequences:
+由此带来的变化：
 
 | | CPU MuJoCo | MJX |
 |---|---|---|
-| environments | 16 | hundreds to thousands |
-| where the policy lives | CPU, batch 16 | GPU, batch 2048 |
-| observation transfer | pickled through pipes | stays on the GPU |
+| 环境数 | 16 | 数百到数千 |
+| 策略所在位置 | CPU，批量 16 | GPU，批量 2048 |
+| 观测传输 | 经管道 pickle 传输 | 始终留在 GPU 上 |
 
-Nothing crosses a process boundary, because nothing is in another process.
+没有任何东西跨越进程边界，因为根本没有东西在另一个进程里。
 
-### Measured, on the machine this was developed on
+### 在开发本项目的机器上的实测
 
-The figures above are architectural. Here is what actually happened on an
-**RTX 3050 Laptop** (4 GB, 3221 MB usable), JAX 0.7.2, MJX 3.12, WSL2:
+上面的数字是架构层面的。下面是在一块 **RTX 3050 Laptop**（4 GB，可用 3221 MB）上、JAX 0.7.2、MJX 3.12、WSL2 环境下的实际情况：
 
-| environments | env-steps/s | GPU memory |
+| 环境数 | env-steps/s | GPU 显存 |
 |---|---|---|
 | 64 | 3,308 | 12 MB |
 | 128 | 4,580 | 26 MB |
@@ -119,86 +92,43 @@ The figures above are architectural. Here is what actually happened on an
 | 1024 | 6,057 | 214 MB |
 | **2048** | **6,579** | **441 MB** |
 | 4096 | 6,161 | 640 MB |
-| 8192 | out of memory | — |
+| 8192 | 显存溢出 | — |
 
-**Peak 6,579 env-steps/s at 2048 environments — 10.7x the CPU path's 616.**
-A 20M-step run drops from about 9 hours to 51 minutes.
+**峰值出现在 2048 个环境时，为 6,579 env-steps/s——是 CPU 路径 616 的 10.7x。** 一次 20M 步的训练运行，从约 9 小时缩短到 51 分钟。
 
-Three things in that table are worth more than the headline.
+这张表里有三点，比那个标题数字更有价值。
 
-**Memory was not the constraint, and the prediction that it would be was
-wrong.** Going in, the reasoning was "4 GB is small, so VRAM will cap the
-environment count". It does not: 2048 environments fit in 441 MB of 3221, and
-throughput had already peaked. The limit is *compute* — the SMs saturate long
-before the memory does. Memory only becomes binding at 8192, four times past
-the useful maximum.
+**显存并不是约束，而“它会是约束”的预测是错的。** 动手之前的推理是“4 GB 很小，所以显存会限制环境数量”。事实并非如此：2048 个环境只占用了 3221 MB 中的 441 MB，而吞吐量已经到达峰值。限制在于*算力*——SM 远在显存之前就饱和了。显存直到 8192 时才成为约束，那已是有用上限的四倍。
 
-**Throughput is not monotonic.** 4096 environments are *slower* than 2048. Past
-saturation, larger batches add scheduling and memory-traffic overhead without
-adding parallelism the hardware can use. Doubling until something fails would
-have reported 4096 as the answer; the right answer is the peak.
+**吞吐量不是单调的。** 4096 个环境比 2048 个*更慢*。越过饱和点之后，更大的批量只会增加调度和访存流量的开销，却不会增加硬件能利用的并行度。如果一路翻倍直到出错为止，得到的答案会是 4096；正确的答案是峰值。
 
-**10.7x, not 100x.** The literature's dramatic speedups come from datacentre
-cards with five times the SMs, compared against weaker CPU baselines. This is a
-2048-CUDA-core laptop GPU, and the CPU baseline here is a reasonably tuned
-16-environment `SubprocVecEnv`. A tenfold speedup is genuinely useful — it is
-the difference between one experiment a day and nine — but it is not the
-transformation the papers suggest, and quoting theirs would have been exactly
-the mistake B20 was about.
+**是 10.7x，不是 100x。** 文献中那些惊人的加速比，来自 SM 数量是这块卡五倍的数据中心显卡，而且对比的是更弱的 CPU 基线。这里是一块拥有 2048 个 CUDA 核心的笔记本 GPU，CPU 基线则是一个调得还算不错的 16 环境 `SubprocVecEnv`。十倍的加速确实有用——这是一天做一次实验和一天做九次实验的差别——但它并不是论文所暗示的那种脱胎换骨，而照搬论文的数字，恰恰就是 B20 所犯的那种错误。
 
-Reproduce with `python -m mjx.benchmark`, which searches for the peak and times
-only the steady state with `block_until_ready`.
+用 `python -m mjx.benchmark` 复现，它会搜索峰值，并借助 `block_until_ready` 只对稳态部分计时。
 
-### Compile time is the hidden cost
+### 编译时间是隐藏成本
 
-Every environment count in that table cost **45–100 seconds of XLA compilation**
-before a single useful step ran. That is invisible in a long training run and
-brutal in an interactive one: a five-second experiment takes two minutes. It is
-also why the benchmark reports compile and steady-state timings separately.
+表中的每一个环境数量，在跑出第一个有用的步之前，都要先花 **45–100 秒做 XLA 编译**。在长时间的训练运行中，这根本察觉不到；在交互式使用中，却非常折磨人：一个五秒钟的实验要花两分钟。这也是基准测试把编译时间和稳态时间分开报告的原因。
 
-### What it costs
+### 代价是什么
 
-Three real constraints, worth knowing before starting.
+有三条实实在在的约束，值得在动手前了解。
 
-**Everything must be functional and shape-static.** No Python `if` on a traced
-value, no data-dependent shapes, no in-place mutation. Control flow becomes
-`jnp.where`. Every episode in the batch runs for the same number of steps, so
-termination is a mask rather than a break.
+**一切都必须是函数式的、形状静态的。** 不能对被追踪的值使用 Python `if`，不能有依赖数据的形状，不能原地修改。控制流变成 `jnp.where`。批量中的每个回合都运行相同的步数，所以终止是一个掩码，而不是一次 break。
 
-**The contact model is more constrained.** MJX supports a subset of MuJoCo's
-collision geometry, and the number of contacts must be bounded statically.
-Menagerie ships `go2_mjx.xml` and `scene_mjx.xml` precisely for this — simplified
-collision geometry with a fixed contact budget. The physics is *not* identical to
-the CPU model, which matters if you intend to evaluate on one and train on the
-other.
+**接触模型受到更多限制。** MJX 只支持 MuJoCo 碰撞几何体的一个子集，而且接触数量必须有静态上界。Menagerie 正是为此提供了 `go2_mjx.xml` 和 `scene_mjx.xml`——简化的碰撞几何体，加上固定的接触预算。其物理与 CPU 模型*并不*完全相同，如果你打算在一个上面评估、在另一个上面训练，这一点就很重要。
 
-**Debugging is harder.** Inside a `jit`, you cannot print an intermediate value
-without `jax.debug.print`, and a shape error surfaces as a trace-time exception
-far from its cause.
+**调试更困难。** 在 `jit` 内部，不借助 `jax.debug.print` 就无法打印中间值，而形状错误会以追踪期异常的形式冒出来，离它真正的成因很远。
 
-## 17.5 The path taken here
+## 17.5 这里所走的路径
 
-The CPU environment stays canonical. It is the one that renders, that
-`scripts/play.py` drives, that `scripts/evaluate.py` measures, and that produces
-video. It is also the one whose physics is unsimplified.
+CPU 环境仍然是标准版本。负责渲染的是它，`scripts/play.py` 驱动的是它，`scripts/evaluate.py` 测量的是它，生成视频的也是它。它也是物理未经简化的那一个。
 
-MJX is an **optional training accelerator**, and it is deliberately last in the
-build order. It is now installed and measured (17.4); what it is not yet is
-*trained with*, and the environment it offers is deliberately easier than the
-CPU one - no domain randomisation, no pushes, no observation noise. Those are
-listed at the top of `mjx/mjx_env.py` and must be added before a GPU-trained
-policy is trusted anywhere the CPU-trained one has been. The reasoning is the same as chapter 13's: optimising the training
-loop before the reward function is correct spends GPU hours discovering that
-your reward is wrong faster. The two bugs that cost the most in this project
-(B1 and B17) would have been reproduced at 4096× the speed and been no easier to
-find.
+MJX 是一个**可选的训练加速器**，并且被有意放在构建顺序的最后。它现在已经安装并完成了测量（17.4）；但还*没有被真正用来训练*，而且它提供的环境被有意设计得比 CPU 环境更简单——没有域随机化，没有外力推扰，没有观测噪声。这些都列在 `mjx/mjx_env.py` 的开头；在 GPU 训练出的策略能在 CPU 训练出的策略用过的任何场合被信任之前，必须先把它们补上。理由与第 13 章相同：在奖励函数正确之前就去优化训练循环，只不过是花费 GPU 小时，更快地发现你的奖励是错的。本项目中代价最大的两个 bug（B1 和 B17）会以 4096× 的速度被复现，却丝毫不会更容易被发现。
 
-### Sharing the reward maths
+### 共享奖励数学
 
-The one design decision made *in advance* for MJX is that `envs/rewards.py` and
-`envs/gait.py` are written array-generically. Every function uses `xp.where`
-rather than Python branching, avoids in-place mutation, and dispatches on the
-array type:
+为 MJX *预先*做出的唯一设计决策，是让 `envs/rewards.py` 和 `envs/gait.py` 以数组泛型的方式编写。每个函数都用 `xp.where` 而不是 Python 分支，避免原地修改，并根据数组类型进行分派：
 
 ```python
 def _backend(x):
@@ -208,66 +138,41 @@ def _backend(x):
     return np
 ```
 
-so the identical reward function runs under both backends. This matters more
-than it looks: two implementations of a sixteen-term reward will diverge, and
-the divergence will be discovered as an unexplained performance difference
-between the CPU and GPU policies months later.
+这样，完全相同的奖励函数就能在两个后端上运行。这一点比看上去更重要：一个十六项奖励的两份实现必然会出现分歧，而这种分歧会在几个月后，以 CPU 策略和 GPU 策略之间一个无法解释的性能差异的形式被发现。
 
-The `RewardState` dataclass exists for the same reason. The reward terms never
-reach into `mjData`, so there is nothing MuJoCo-specific for them to reach into
-under MJX.
+`RewardState` 数据类存在的理由也是如此。奖励项从不直接访问 `mjData`，所以在 MJX 下，也就不存在任何 MuJoCo 特有的东西需要它们去访问。
 
-### What still has to be written per backend
+### 每个后端仍需各自编写的部分
 
-- state extraction — building a `RewardState` from `mjx.Data` instead of
-  `mjData`
-- contact detection — MJX exposes contacts differently and the geom filtering
-  has to be vectorised
-- the reset and command sampler — must become functional, with an explicit PRNG
-  key
-- the training loop — either brax's PPO, or a JAX port of
-  `ppo_from_scratch/ppo.py`
+- 状态提取——从 `mjx.Data` 而不是 `mjData` 构建 `RewardState`
+- 接触检测——MJX 暴露接触的方式不同，几何体过滤必须向量化
+- 重置与指令采样器——必须改成函数式的，并显式传入 PRNG key
+- 训练循环——要么用 brax 的 PPO，要么把 `ppo_from_scratch/ppo.py` 移植到 JAX
 
-That is a real piece of work, on the order of a few days, which is why it is
-staged rather than assumed.
+这是一项实实在在的工作，量级在几天左右，这也是为什么它被分阶段推进，而不是被想当然地视为已经完成。
 
-## 17.6 Cheaper things to do first
+## 17.6 可以先做的更便宜的事
 
-Not everything requires JAX.
+并不是所有事都需要 JAX。
 
-**A CUDA build of PyTorch.** (Relevant only to the CPU/SB3 path; MJX does not
-use PyTorch at all.) The environment ships `torch 2.13.0+cpu` by
-default, because that is what `pip install -r requirements.txt` resolves to.
-With 16 environments the policy update is a small fraction of the time, so this
-buys little now — but it costs nothing and matters as the network grows:
+**CUDA 版的 PyTorch。**（只与 CPU/SB3 路径有关；MJX 根本不使用 PyTorch。）环境默认附带 `torch 2.13.0+cpu`，因为 `pip install -r requirements.txt` 解析出来的就是它。在 16 个环境下，策略更新只占很小一部分时间，所以现在这么做收益不大——但它没有任何成本，而且随着网络变大会越来越重要：
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
-**Profile before optimising.** The 2× in §17.1 came from twenty minutes with
-`cProfile` and would never have been guessed. `np.cross` on 3-vectors is a trap
-that is presumably still costing other MuJoCo projects a factor of two.
+**先剖析，再优化。** §17.1 中的 2× 来自用 `cProfile` 花的二十分钟，靠猜是永远猜不到的。对 3 维向量调用 `np.cross` 是一个陷阱，想必至今仍在让其他 MuJoCo 项目白白慢上一倍。
 
-**Benchmark your own machine.** `--n-envs` and `--vec-env` are flags for a
-reason; the table in §17.1 is one laptop.
+**在你自己的机器上做基准测试。** `--n-envs` 和 `--vec-env` 被做成命令行参数是有原因的；§17.1 中的表格只代表一台笔记本。
 
-**Reduce what the environment computes.** `_contact_state` iterates every
-contact and calls `mj_contactForce` on the ground contacts. It is currently 6% of
-the step and was 3% before the `np.cross` fix removed the larger cost around it.
+**减少环境的计算量。** `_contact_state` 会遍历每一个接触，并对地面接触调用 `mj_contactForce`。它目前占单步时间的 6%，而在 `np.cross` 的修复移除它周围那块更大的开销之前，它只占 3%。
 
-## 17.7 The honest summary
+## 17.7 诚实的总结
 
-The current setup trains a walking policy overnight. That is entirely adequate
-for developing and debugging the environment, and it is what most of this
-repository's value is in.
+当前的配置一夜之间就能训练出一个会走路的策略。这对开发和调试环境来说完全够用，而本仓库的大部分价值也正在于此。
 
-It is roughly two orders of magnitude off the state of the art in throughput,
-and the gap is architectural rather than algorithmic. If you intend to run
-ablations across a dozen reward configurations, or to train on terrain, the MJX
-path stops being optional.
+在吞吐量上，它与最先进水平相差大约两个数量级，而这个差距是架构上的，而不是算法上的。如果你打算在十几种奖励配置上做消融实验，或者在地形上训练，那么 MJX 路径就不再是可选项了。
 
 ---
 
-**Previous:** [16. What sim-to-real would take](16-sim-to-real.md) ·
-**Back to:** [index](README.md)
+**上一章：** [16. 从仿真到现实还需要什么](16-sim-to-real.md) · **返回：** [目录](README.md)

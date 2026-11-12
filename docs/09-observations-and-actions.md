@@ -1,60 +1,50 @@
-# 9. Observations and actions
+# 9. 观测与动作
 
-The observation is the policy's entire world. Every design decision here is a
-decision about what the robot is *able* to know, and therefore about what
-behaviours are even representable.
+观测就是策略的整个世界。这里的每一个设计决策，都是在决定机器人*能够*知道什么，因而也决定了哪些行为根本可以被表示出来。
 
-## 9.1 The vector
+## 9.1 这个向量
 
-Fifty numbers, in this order (`Go2Env._get_obs`):
+五十个数，按以下顺序排列（`Go2Env._get_obs`）：
 
-| Slice | Block | Dim | Scale | Frame |
+| 切片 | 块 | 维度 | 缩放 | 坐标系 |
 |---|---|---|---|---|
-| `0:3` | projected gravity $g_b$ | 3 | 1.0 | base |
-| `3:6` | angular velocity $\omega_b$ | 3 | 0.25 | base |
-| `6:9` | linear velocity $v_b$ | 3 | 2.0 | base |
-| `9:21` | joint positions $q - q_\text{nom}$ | 12 | 1.0 | joint |
-| `21:33` | joint velocities $\dot q$ | 12 | 0.05 | joint |
-| `33:45` | previous action $a_{t-1}$ | 12 | 1.0 | — |
-| `45:48` | command $(v_x^*, v_y^*, \omega_z^*)$ | 3 | (2, 2, 0.25) | base |
-| `48:50` | gait clock $(\sin 2\pi\phi, \cos 2\pi\phi)$ | 2 | 1.0 | — |
+| `0:3` | 投影重力 $g_b$ | 3 | 1.0 | 机身 |
+| `3:6` | 角速度 $\omega_b$ | 3 | 0.25 | 机身 |
+| `6:9` | 线速度 $v_b$ | 3 | 2.0 | 机身 |
+| `9:21` | 关节位置 $q - q_\text{nom}$ | 12 | 1.0 | 关节 |
+| `21:33` | 关节速度 $\dot q$ | 12 | 0.05 | 关节 |
+| `33:45` | 上一步动作 $a_{t-1}$ | 12 | 1.0 | — |
+| `45:48` | 指令 $(v_x^*, v_y^*, \omega_z^*)$ | 3 | (2, 2, 0.25) | 机身 |
+| `48:50` | 步态时钟 $(\sin 2\pi\phi, \cos 2\pi\phi)$ | 2 | 1.0 | — |
 
-For comparison, v1's 53:
+作为对比，v1 的 53 维：
 
-| Block | Dim | Problem |
+| 块 | 维度 | 问题 |
 |---|---|---|
-| orientation quaternion | 4 | carries absolute yaw |
-| angular velocity | 3 | world frame, unscaled |
-| linear velocity | 3 | **world frame** (bug B2), unscaled |
-| joint positions | 12 | absolute, not relative to nominal |
-| joint velocities | 12 | unscaled ($O(20)$) |
-| previous action | 12 | fine |
-| foot contacts | 4 | binary, from a broken detector (B10) |
-| command | 3 | constant for the entire run (B3) |
+| 姿态四元数 | 4 | 携带绝对偏航 |
+| 角速度 | 3 | 世界坐标系，未缩放 |
+| 线速度 | 3 | **世界坐标系**（bug B2），未缩放 |
+| 关节位置 | 12 | 绝对值，而不是相对于名义姿态 |
+| 关节速度 | 12 | 未缩放（$O(20)$） |
+| 上一步动作 | 12 | 没问题 |
+| 足端接触 | 4 | 二值，来自一个有问题的检测器（B10） |
+| 指令 | 3 | 在整个训练运行中保持不变（B3） |
 
-The docstring said 49; the space was 53. Nobody had recounted.
+文档字符串里写的是 49；实际的空间是 53。没有人重新数过。
 
-## 9.2 Projected gravity, not the quaternion
+## 9.2 用投影重力，而不是四元数
 
-The first block is
+第一个块是
 
 $$
 g_b = R(q)^{\top} \begin{pmatrix} 0 \\ 0 \\ -1 \end{pmatrix}
 $$
 
-the world gravity direction expressed in the base frame. Upright, it is
-$(0, 0, -1)$; tilted, magnitude moves into the $xy$ components.
+即在机体坐标系中表示的世界重力方向。直立时它是 $(0, 0, -1)$；倾斜时，模长会转移到 $xy$ 分量上。
 
-**Why not the quaternion?** Because a quaternion encodes yaw, and yaw is a
-*commanded* quantity in this task, not a state to be corrected. Feed absolute
-heading to the policy and it can — will — correlate behaviour with a direction
-that has no physical meaning. Nothing about walking north differs from walking
-east, but a network given the heading has no way to know that, and it will
-happily fit spurious structure in whatever heading distribution the training
-episodes happened to contain.
+**为什么不用四元数？** 因为四元数编码了偏航，而在这个任务里，偏航是一个*被指令给定*的量，而不是一个需要纠正的状态。把绝对朝向喂给策略，它就能够——而且一定会——把行为与一个没有任何物理意义的方向关联起来。朝北走和朝东走没有任何区别，但一个拿到了朝向信息的网络无从得知这一点，它会很乐意地去拟合训练回合碰巧包含的那个朝向分布里的虚假结构。
 
-Projected gravity is precisely the yaw-free part of the attitude. This is
-verified as a test:
+投影重力恰好就是姿态中与偏航无关的那一部分。这一点有测试来验证：
 
 ```python
 def test_projected_gravity_is_yaw_invariant():
@@ -63,214 +53,127 @@ def test_projected_gravity_is_yaw_invariant():
         assert np.allclose(Go2Env.quat_rotate_inverse(q, g), g, atol=1e-12)
 ```
 
-**Why not roll and pitch angles?** They would also be yaw-free. But extracting
-them requires `atan2` and `asin`, which have a singularity at pitch $= \pm\pi/2$
-and produce a discontinuity in roll as you pass through it. The robot does reach
-those attitudes while falling over — exactly the states where the value function
-most needs to be well-behaved. $g_b$ is smooth everywhere and costs one
-quaternion rotation.
+**为什么不用横滚角和俯仰角？** 它们同样与偏航无关。但提取它们需要 `atan2` 和 `asin`，二者在俯仰 $= \pm\pi/2$ 处有奇点，并且在经过该点时会让横滚角出现不连续。机器人在摔倒的过程中确实会到达这些姿态——而这恰恰是价值函数最需要表现良好的那些状态。$g_b$ 处处光滑，代价只是一次四元数旋转。
 
-Three numbers with a redundant constraint ($\Vert g_b\Vert = 1$) rather than two
-independent angles is a good trade.
+用三个带一个冗余约束（$\Vert g_b\Vert = 1$）的数，而不是两个独立的角度，是一笔划算的交易。
 
-Reset randomisation makes yaw uniform on $[-\pi, \pi)$ regardless, which is a
-second, independent line of defence against heading-correlated behaviour.
+无论如何，重置时的随机化都会让偏航在 $[-\pi, \pi)$ 上均匀分布，这是针对朝向相关行为的第二道、相互独立的防线。
 
-## 9.3 Everything in the base frame
+## 9.3 一切都在机身坐标系中
 
-The velocities are rotated into the robot's own frame:
+速度被旋转到机器人自身的坐标系中：
 
 $$
 v_b = R^{\top} v_w, \qquad \omega_b = R^{\top} \omega_w
 $$
 
-This is bug B2 fixed. v1 fed `qvel[0:3]` — world frame — into both the reward
-and the observation. The consequences compound:
+这就是 bug B2 的修复。v1 把 `qvel[0:3]`——世界坐标系下的量——同时喂给了奖励和观测。后果层层叠加：
 
-- The policy is asked to make $v_x^{\text{world}}$ equal the command. If the
-  robot is facing east, "forward" in the reward means "east", not "the way I am
-  pointing".
-- Since v1 randomised nothing about the initial heading and never commanded a
-  turn, the robot always faced $+x$ and the bug was invisible. It became a bug
-  the moment anyone asked for a yaw rate.
-- The lateral penalty $-|v_y^{\text{world}}|$ punished the robot for the world
-  drifting sideways relative to it, which after any yaw is not the same thing as
-  crabbing.
+- 策略被要求让 $v_x^{\text{world}}$ 等于指令。如果机器人面朝东，奖励里的“前进”指的就是“向东”，而不是“我所朝向的方向”。
+- 由于 v1 从不随机化初始朝向，也从不发出转向指令，机器人始终面朝 $+x$，这个 bug 因此一直是隐形的。一旦有人要求一个偏航角速度，它立刻就变成了 bug。
+- 侧向惩罚项 $-|v_y^{\text{world}}|$ 惩罚的是世界相对于机器人的侧向漂移，而在发生任何偏航之后，这和机器人横着走（蟹行）就不是一回事了。
 
-Commands are in the base frame too, which is what makes them intuitive: $v_x^*$
-means "forward, from the robot's point of view", the same way a joystick works.
+指令同样定义在机身坐标系中，这正是它们直观易懂的原因：$v_x^*$ 的意思是“从机器人的视角向前”，和摇杆的工作方式一样。
 
-## 9.4 Joint positions relative to nominal
+## 9.4 关节位置相对于名义姿态
 
 $$
 \tilde q = q - q_\text{nom}
 $$
 
-Two reasons.
+两个原因。
 
-**Zero means "standing".** The network's natural output near initialisation is
-zero, and now zero is a meaningful, useful pose rather than an arbitrary one.
-Combined with the 0.01 output-layer gain (chapter 6), the untrained policy
-stands.
+**零意味着“站立”。** 网络在初始化附近的自然输出是零，而现在零是一个有意义、有用的姿态，而不是一个随意的姿态。再结合 0.01 的输出层增益（第 6 章），未经训练的策略就能站住。
 
-**It matches the action.** The action is also an offset from $q_\text{nom}$, so
-$\tilde q$ and $a$ live in the same space. The policy's job — "given where the
-joints are relative to nominal, where should I put them relative to nominal" —
-becomes a mapping between comparable quantities, which is easier to learn than
-a mapping between an absolute and a relative frame.
+**它与动作相匹配。** 动作同样是相对于 $q_\text{nom}$ 的偏移，因此 $\tilde q$ 和 $a$ 位于同一个空间中。策略的任务——“给定关节相对于名义姿态的位置，我应该把它们放到相对于名义姿态的哪里”——就变成了可比较量之间的映射，这比在绝对坐标与相对坐标之间做映射更容易学习。
 
-## 9.5 Scaling
+## 9.5 缩放
 
-Each block is multiplied by a constant so it lands roughly in $[-1, 1]$:
+每个块都乘以一个常数，使其大致落在 $[-1, 1]$ 内：
 
-| Block | Typical raw range | Scale | Scaled |
+| 块 | 典型原始范围 | 缩放 | 缩放后 |
 |---|---|---|---|
 | $g_b$ | $[-1, 1]$ | 1.0 | $[-1, 1]$ |
 | $\omega_b$ | $\pm 4$ rad/s | 0.25 | $\pm 1$ |
 | $v_b$ | $\pm 0.5$ m/s | 2.0 | $\pm 1$ |
 | $\tilde q$ | $\pm 1$ rad | 1.0 | $\pm 1$ |
 | $\dot q$ | $\pm 20$ rad/s | 0.05 | $\pm 1$ |
-| command $v$ | $\pm 1.5$ m/s | 2.0 | $\pm 3$ |
-| command $\omega$ | $\pm 1.5$ rad/s | 0.25 | $\pm 0.4$ |
+| 指令 $v$ | $\pm 1.5$ m/s | 2.0 | $\pm 3$ |
+| 指令 $\omega$ | $\pm 1.5$ rad/s | 0.25 | $\pm 0.4$ |
 
-"But `VecNormalize` already normalises the observation" — true, and this is
-still worth doing, for three reasons:
+“可是 `VecNormalize` 已经会对观测做归一化了”——没错，但这件事仍然值得做，原因有三：
 
-1. `VecNormalize` needs to *learn* the statistics. During the first thousands of
-   steps the observation is unnormalised, and those are the steps that determine
-   which basin the policy falls into.
-2. Its running statistics drift as the policy's behaviour changes. Fixed scales
-   do not.
-3. It is a deployment liability. A policy whose correctness depends on a running
-   statistic accumulated over 8 million steps is a policy you must ship a pickle
-   file with — and lose it and the policy is worthless (bug B12). Fixed scales
-   are in the source code.
+1. `VecNormalize` 需要*学习*统计量。在最初的几千步里，观测是未归一化的，而恰恰是这些步决定了策略会落入哪个盆地。
+2. 它的滑动统计量会随着策略行为的变化而漂移。固定缩放则不会。
+3. 它是部署时的隐患。一个其正确性依赖于在 800 万步上累积出来的滑动统计量的策略，是一个你必须连同一个 pickle 文件一起发布的策略——把这个文件弄丢，策略就一文不值（bug B12）。固定缩放则就写在源代码里。
 
-## 9.6 The previous action
+## 9.6 上一步动作
 
-$a_{t-1}$, unscaled. Two jobs.
+$a_{t-1}$，未缩放。承担两项职责。
 
-**It makes the action-rate penalty learnable.** The reward includes
-$-\Vert a_t - a_{t-1}\Vert ^2$. Without $a_{t-1}$ in the observation, that term is a
-function of something the policy cannot see, so it appears as unexplainable
-noise in the reward and the policy can only reduce it by reducing its variance
-globally.
+**它让动作变化率惩罚项变得可学习。** 奖励中包含 $-\Vert a_t - a_{t-1}\Vert ^2$。如果观测中没有 $a_{t-1}$，这一项就是某个策略看不到的东西的函数，于是它在奖励中表现为无法解释的噪声，策略只能靠全局地降低自身的方差来减小它。
 
-**It carries actuator state.** The real joint has not reached $a_{t-1}$'s target
-yet — that is what the PD controller is still doing. $a_{t-1}$ tells the policy
-where the controller is currently headed, which is genuine state information
-that $q$ and $\dot q$ do not fully capture.
+**它携带执行器状态。** 真实关节还没有到达 $a_{t-1}$ 给出的目标——PD 控制器此刻仍在做的正是这件事。$a_{t-1}$ 告诉策略控制器当前正朝着哪里去，这是 $q$ 和 $\dot q$ 无法完全捕捉的真实状态信息。
 
-## 9.7 The gait clock
+## 9.7 步态时钟
 
 $$
 (\sin 2\pi\phi, \quad \cos 2\pi\phi)
 $$
 
-Two numbers for one scalar $\phi \in [0,1)$, because $\phi$ is **circular**:
-$\phi = 0.999$ and $\phi = 0.001$ are adjacent in time but maximally distant as
-real numbers. A network fed raw $\phi$ would see a discontinuity once per
-stride. The $(\sin, \cos)$ embedding is the standard fix: continuous, unique,
-and bounded.
+用两个数来表示一个标量 $\phi \in [0,1)$，是因为 $\phi$ 是**环形的**：$\phi = 0.999$ 和 $\phi = 0.001$ 在时间上相邻，但作为实数却相距最远。一个直接接收原始 $\phi$ 的网络，每个步态周期都会看到一次不连续。$(\sin, \cos)$ 嵌入是标准的解决办法：连续、唯一、有界。
 
-This block is the whole reason v2 can control the gait. Chapter 11 develops it.
-The short version: the reward compares actual foot contacts against a schedule
-derived from $\phi$, and the policy can only satisfy that schedule if it knows
-where in the stride it is. Without the clock in the observation, the phase
-reward is unlearnable noise.
+v2 之所以能控制步态，全靠这个块。第 11 章会展开讨论。简而言之：奖励会把实际的足端接触与一个由 $\phi$ 导出的时间表进行比较，而策略只有知道自己处在步态周期中的哪个位置，才能满足这个时间表。如果观测中没有时钟，相位奖励就是无法学习的噪声。
 
-Note the global clock is in the observation, not the per-foot phases. Per-foot
-phases would be eight numbers and are a deterministic function of $\phi$ and the
-gait — but the gait *identity* is not in the observation, which is a deliberate
-limitation of the current version: with `gaits: ["trot"]` there is only one, so
-the offsets are constant and the network absorbs them. To train a genuinely
-multi-gait policy you must add the per-foot clock (`clock_signal` in
-`envs/gait.py` returns exactly this) or a one-hot gait ID. That is a two-line
-change and is noted in chapter 11.
+注意，观测里放的是全局时钟，而不是每个足端各自的相位。每个足端的相位会是八个数，而且是 $\phi$ 和步态的确定性函数——但步态的*身份*并不在观测中，这是当前版本有意为之的局限：在 `gaits: ["trot"]` 的设置下只有一种步态，因此各足端的偏移量是常数，网络会把它们吸收掉。要训练一个真正的多步态策略，你必须加入每个足端的时钟（`envs/gait.py` 中的 `clock_signal` 返回的正是它）或者一个 one-hot 步态 ID。这只是两行代码的改动，第 11 章中有提及。
 
-## 9.8 What is deliberately absent
+## 9.8 刻意缺席的东西
 
-**Foot contacts.** v1 included four binary contact flags. v2 does not, for two
-reasons: the detector was unreliable (B10), and contact state is largely implied
-by $q$, $\dot q$ and the clock. More importantly, on hardware a contact flag is
-a thresholded force estimate that is noisy and often wrong, so a policy that
-leans on it transfers badly. legged_gym omits it as well.
+**足端接触。** v1 包含四个二值接触标志。v2 没有，原因有二：检测器不可靠（B10），而且接触状态在很大程度上可以由 $q$、$\dot q$ 和时钟推断出来。更重要的是，在硬件上，接触标志是一个经过阈值处理的力估计值，噪声大且经常出错，因此依赖它的策略迁移效果很差。legged_gym 同样省略了它。
 
-**Absolute position and heading.** $x$, $y$, and yaw are not in the observation.
-The task is velocity tracking, not navigation. Including position would let the
-policy learn behaviours that depend on where it happens to be in the arena.
+**绝对位置与朝向。** $x$、$y$ 和偏航都不在观测中。任务是速度跟踪，而不是导航。加入位置会让策略学到依赖于它碰巧身处场地中哪个位置的行为。
 
-**Terrain information.** Out of scope for this version. A height-map scan around
-the feet is the standard addition for rough terrain.
+**地形信息。** 不在本版本的范围之内。在足端周围扫描一张高度图，是应对崎岖地形的标准补充。
 
-**Observation history.** A stack of the last $N$ observations is the standard way
-to give a feedforward policy some memory of unmodelled dynamics, and it is the
-first thing to add for sim-to-real (chapter 16).
+**观测历史。** 堆叠最近 $N$ 个观测，是让前馈策略对未建模动力学拥有一定记忆的标准做法，也是做仿真到现实（sim-to-real）时首先要加的东西（第 16 章）。
 
-## 9.9 The action space
+## 9.9 动作空间
 
 $$
 a \in [-1, 1]^{12}, \qquad q^* = q_\text{nom} + 0.40 a
 $$
 
-**Why position targets, not torques** — chapter 8, §8.5.
+**为什么用位置目标而不是力矩**——见第 8 章 §8.5。
 
-**Why 0.40 rad?** The action scale is pulled in two directions at once, and the
-value is where they meet.
+**为什么是 0.40 rad？** 动作缩放同时受到两个方向的拉扯，而这个值正是两者交汇之处。
 
-*Upward*, because it sets the **stride length**, and therefore the top speed.
-During stance the foot is planted and the body moves over it, so the fore-aft
-travel available to a planted foot is the stride. Measured: 16 cm at
-$\alpha = 0.25$, 29 cm at 0.40. A scripted open-loop trot reaches 0.62 m/s at
-$\alpha = 0.30$ and 1.08 m/s at 0.40. Too small an action scale silently caps
-the robot below the speeds the command envelope asks for — bug B20.
+*往上拉*，因为它决定了**步幅**，从而决定了最高速度。在支撑相中，足端踩实在地面上，身体从它上方移过，因此一只踩实的足端可用的前后行程就是步幅。实测：$\alpha = 0.25$ 时为 16 cm，0.40 时为 29 cm。一个脚本化的开环小跑在 $\alpha = 0.30$ 时能达到 0.62 m/s，在 0.40 时能达到 1.08 m/s。动作缩放太小，会悄无声息地把机器人的速度压在指令范围所要求的速度之下——bug B20。
 
-*Downward*, because it sets the **maximum stiffness of the closed loop**. The
-largest torque the policy can command away from the nominal pose is
-$k_p \times \alpha = 55 \times 0.40 = 22$ N·m, just inside the 23.7 N·m hip and
-thigh limit. Push $\alpha$ higher and the PD offset alone saturates the actuator
-every step, which in simulation produces impressive-looking motion that no real
-robot can execute.
+*往下拉*，因为它决定了**闭环的最大刚度**。策略能在名义姿态之外指令出的最大力矩是 $k_p \times \alpha = 55 \times 0.40 = 22$ N·m，刚好在髋关节和大腿关节 23.7 N·m 的限制之内。把 $\alpha$ 再调高，仅 PD 偏移本身就会让执行器每一步都饱和，这在仿真中会产生看起来很惊艳、但没有任何真实机器人能执行的运动。
 
-Note the interaction with bug B1. v1's action scale of 0.5 was not itself
-wrong — combined with a nominal calf angle of 0 rad it produced a reachable
-target set of $[-0.5, 0.5]$ against a joint limit of $[-2.723, -0.838]$: an
-empty intersection. The number was never the problem; the pose it was measured
-from was.
+注意它与 bug B1 的相互作用。v1 的动作缩放 0.5 本身并没有错——但它与 0 rad 的名义小腿角度结合在一起，产生的可达目标集合是 $[-0.5, 0.5]$，而关节限位是 $[-2.723, -0.838]$：交集为空。问题从来不在这个数本身，而在于它所基于的那个姿态。
 
-**Clipping.** The environment clips the incoming action to $[-1,1]$ before using
-it. Nothing guarantees a Gaussian policy respects the box, and an unclipped
-action of 5.0 would command a joint 1.25 rad from nominal.
+**裁剪。** 环境在使用传入的动作之前，会先把它裁剪到 $[-1,1]$。没有任何东西能保证高斯策略会遵守这个边界框，而一个未裁剪的 5.0 动作会让关节偏离名义姿态 1.25 rad。
 
-Note the asymmetry with `ppo_from_scratch/ppo.py`, which stores the *unclipped*
-action while sending the clipped one — see chapter 6, §6.4. The environment must
-clip for safety; the algorithm must remember what it actually sampled.
+注意这与 `ppo_from_scratch/ppo.py` 之间的不对称：后者存储的是*未裁剪*的动作，发送出去的却是裁剪后的动作——见第 6 章 §6.4。环境必须为了安全而裁剪；算法必须记住它实际采样到的是什么。
 
-## 9.10 Is this Markov?
+## 9.10 这是马尔可夫的吗？
 
-Chapter 1 argued the Markov property is a design constraint on the observation,
-not a given. Auditing the choices here:
+第 1 章论证过，马尔可夫性是对观测的一项设计约束，而不是既定事实。逐一审视这里的选择：
 
-| Hidden variable | Handled by |
+| 隐藏变量 | 处理方式 |
 |---|---|
-| stride phase | in the observation (the clock) |
-| commanded velocity | in the observation |
-| actuator lag | partly, via $a_{t-1}$ |
-| ground friction | randomised across episodes (chapter 12) |
-| payload mass | randomised across episodes |
-| an in-progress push | **not observable** |
+| 步态周期相位 | 在观测中（时钟） |
+| 指令速度 | 在观测中 |
+| 执行器延迟 | 部分处理，通过 $a_{t-1}$ |
+| 地面摩擦 | 在不同回合间随机化（第 12 章） |
+| 负载质量 | 在不同回合间随机化 |
+| 正在进行中的外力推扰 | **不可观测** |
 
-The last row is the honest gap. A push is applied to the trunk for 0.15 s and
-the policy cannot see it — it can only infer it from the resulting acceleration,
-one step late. This makes the process formally non-Markov in the observation.
+最后一行是坦白承认的缺口。推扰会在躯干上施加 0.15 s，而策略看不到它——只能从由此产生的加速度中把它推断出来，而且要晚一步。这使得该过程在观测上从形式上说是非马尔可夫的。
 
-It is left that way deliberately, because it is realistic: a real robot cannot
-see a shove coming either. The consequence is that the value function has
-irreducible variance around push events, which shows up as a small permanent
-ceiling on `explained_variance`. That is the correct trade, but it should be a
-known trade rather than an accident.
+之所以刻意保留这一点，是因为它符合现实：真实的机器人同样看不到一次推搡即将到来。其后果是，价值函数在推扰事件附近存在不可约的方差，这表现为 `explained_variance` 上一个小而永久的上限。这是正确的取舍，但它应当是一个已知的取舍，而不是一个意外。
 
 ---
 
-**Previous:** [8. The Go2, MuJoCo, and PD control](08-the-robot.md) ·
-**Next:** [10. Reward engineering](10-reward-engineering.md)
+**上一章：** [8. Go2、MuJoCo 与 PD 控制](08-the-robot.md) · **下一章：** [10. 奖励工程](10-reward-engineering.md)

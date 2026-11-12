@@ -1,234 +1,172 @@
-# 13. Reading a training run
+# 13. 解读训练过程
 
-An RL run gives you no error messages. It gives you curves, and it will happily
-converge to something wrong while every curve looks plausible. This chapter is
-about reading them.
+强化学习的训练运行不会给你任何报错信息。它给你的是曲线，而且它会在每条曲线都看起来合情合理的同时，欣然收敛到某个错误的结果上。本章讲的就是如何解读这些曲线。
 
-Read this before starting a long run. The difference between debugging in an
-afternoon and debugging in a week is almost entirely knowing which trace answers
-which question.
+在开始一次长时间训练之前先读读本章。一个下午调完和一周调完之间的差别，几乎完全在于是否知道哪条曲线回答哪个问题。
 
 ```bash
 tensorboard --logdir logs/tensorboard/ --port 6006
 ```
 
-## 13.1 The traces, and what each one is for
+## 13.1 各条曲线及其用途
 
-### `train/explained_variance` — the most diagnostic single number
+### `train/explained_variance` —— 最具诊断价值的单个数字
 
 $$
 \mathrm{EV} = 1 - \frac{\operatorname{Var}[G - \hat V]}{\operatorname{Var}[G]}
 $$
 
-How much of the return's variance the critic accounts for.
+critic 解释了回报方差中的多大比例。
 
-| Value | Meaning |
+| 取值 | 含义 |
 |---|---|
-| $> 0.9$ | critic is good; advantages are meaningful |
-| $0.5 - 0.9$ | acceptable, still learning |
-| $\approx 0$ | critic is no better than predicting the mean |
-| $< 0$ | critic is *worse* than the mean. Normal for the first few updates; alarming after that |
+| $> 0.9$ | critic 很好；优势是有意义的 |
+| $0.5 - 0.9$ | 可以接受，仍在学习 |
+| $\approx 0$ | critic 并不比直接预测均值更好 |
+| $< 0$ | critic 比均值*更差*。在最初几次更新中属于正常；之后还这样就令人警惕了 |
 
-Why it matters more than the reward curve: the policy gradient is weighted by
-advantages estimated from the critic (chapter 3, §3.6). A bad critic does not
-merely slow learning, it points the policy in wrong directions. If EV is near
-zero after a few hundred thousand steps, nothing downstream is trustworthy and
-there is no point tuning the reward.
+为什么它比奖励曲线更重要：策略梯度是由 critic 估计出的优势加权的（第 3 章 §3.6）。糟糕的 critic 不只是拖慢学习，它会把策略指向错误的方向。如果在几十万步之后 EV 仍接近零，下游的一切都不可信，调奖励也毫无意义。
 
-Causes of persistently low EV, in the order worth checking: the reward has huge
-unpredictable spikes (a termination penalty, an un-normalised term); $\gamma$ is
-too high for the horizon the critic can actually see; `vf_coef` is too small;
-there is genuine unobservable randomness — which for this environment there is,
-because a push is invisible to the policy until it has already happened
-(chapter 9, §9.10). Expect a permanent ceiling somewhat below 1.0 for that
-reason.
+EV 持续偏低的原因，按值得排查的顺序：奖励中有巨大且不可预测的尖峰（终止惩罚、未归一化的项）；$\gamma$ 对 critic 实际能看到的视界来说太高；`vf_coef` 太小；存在真正不可观测的随机性——这个环境里确实存在，因为外力推扰在发生之前对策略是不可见的（第 9 章 §9.10）。出于这个原因，可以预期存在一个略低于 1.0 的永久上限。
 
-### `train/approx_kl` — how far the policy moved
+### `train/approx_kl` —— 策略移动了多远
 
-Equation 5.10. Should sit somewhere around `target_kl` (0.02 here).
+式 5.10。应当保持在 `target_kl`（此处为 0.02）附近。
 
-| | Meaning |
+| | 含义 |
 |---|---|
-| $\ll 0.01$ | the policy is barely moving. LR too low, or advantages near zero |
-| $0.01 - 0.03$ | healthy |
-| $> 0.05$ | too large. Expect instability shortly |
-| spiking | one bad minibatch. Check `max_grad_norm` |
+| $\ll 0.01$ | 策略几乎没动。学习率太低，或优势接近零 |
+| $0.01 - 0.03$ | 健康 |
+| $> 0.05$ | 太大。不久就会出现不稳定 |
+| 尖峰 | 某个糟糕的小批量（minibatch）。检查 `max_grad_norm` |
 
-### `train/clip_fraction` — what fraction of samples hit the clip
+### `train/clip_fraction` —— 触发裁剪的样本比例
 
-Should be **non-zero**. Zero means the clip never activates, so PPO is behaving
-as plain policy gradient and you have lost the trust region. 0.05–0.2 is
-healthy. Above 0.3 means most of your update is being discarded — the learning
-rate or the number of epochs is too high, and you are burning compute to produce
-no gradient.
+应当**不为零**。为零意味着裁剪从未生效，PPO 表现得就像普通的策略梯度，你失去了信赖域。0.05–0.2 是健康的。高于 0.3 意味着你的大部分更新都被丢弃了——学习率或 epoch 数太高，你在燃烧算力，却产生不了梯度。
 
-### `train/std` — the policy's exploration noise
+### `train/std` —— 策略的探索噪声
 
-Starts at $e^{-1} \approx 0.37$ and should **decrease slowly**. This is the
-policy becoming confident.
+从 $e^{-1} \approx 0.37$ 开始，应当**缓慢下降**。这代表策略在变得自信。
 
-| | Meaning |
+| | 含义 |
 |---|---|
-| falls fast (below 0.1 within 1M steps) | premature convergence. Raise `ent_coef` |
-| does not fall at all | `ent_coef` too high — v1's 0.01 does this |
-| rises | the policy is being pushed toward randomness. Something is wrong |
+| 下降很快（1M 步内降到 0.1 以下） | 过早收敛。提高 `ent_coef` |
+| 完全不下降 | `ent_coef` 太高——v1 的 0.01 就是这样 |
+| 上升 | 策略正被推向随机。肯定有地方出了问题 |
 
-### `rollout/ep_len_mean` and `episode/mean_length`
+### `rollout/ep_len_mean` 与 `episode/mean_length`
 
-The bluntest survival measure. In this environment the truncation limit is 1000
-steps (20 s), so:
+最直白的存活度量。在这个环境中截断上限是 1000 步（20 s），所以：
 
-- rising toward 1000: the robot is learning not to fall
-- pinned at 1000: it never falls. **This is not necessarily good** — see §13.3
-- falling while `curriculum/level` rises: the curriculum is outrunning the policy
+- 朝 1000 上升：机器人正在学会不摔倒
+- 卡在 1000：它从不摔倒。**这未必是好事**——见 §13.3
+- 随 `curriculum/level` 上升而下降：课程跑在了策略前面
 
 ### `rollout/ep_rew_mean`
 
-The headline number, and the least informative one. It confounds every reward
-term. A robot that stands still can out-score one that walks badly — that is
-precisely what happened to v1 (chapter 10, §10.5). Use it to detect collapse,
-not to judge quality.
+头条数字，也是信息量最少的那个。它把所有奖励项混在了一起。一台站着不动的机器人可能比一台走得很糟的机器人得分更高——这正是 v1 遭遇的情况（第 10 章 §10.5）。用它来检测崩溃，而不是评判质量。
 
-### `rew/*` — the per-term breakdown
+### `rew/*` —— 逐项分解
 
-This is where the real information is, and it is the main thing v2 added over
-v1. `RewardTermLoggerCallback` records every weighted term separately.
+真正的信息在这里，这也是 v2 相对 v1 增加的最主要的东西。`RewardTermLoggerCallback` 会分别记录每一个加权后的奖励项。
 
-| Trace | Reads as |
+| 曲线 | 解读为 |
 |---|---|
-| `rew/track_lin_vel_xy` | is it following velocity commands |
-| `rew/gait_phase` | are the right feet on the ground at the right time |
-| `rew/feet_clearance` | are the swing feet getting anywhere near their target height |
-| `rew/feet_air_time` | **is it actually lifting its feet** |
-| `rew/feet_slip` | is it skating |
-| `rew/collision` | are the knees hitting the ground |
-| `rew/action_rate`, `rew/joint_acceleration` | is it juddering |
+| `rew/track_lin_vel_xy` | 它是否在跟随速度指令 |
+| `rew/gait_phase` | 是否是正确的足在正确的时间着地 |
+| `rew/feet_clearance` | 摆动足是否接近了目标高度 |
+| `rew/feet_air_time` | **它是否真的在抬足** |
+| `rew/feet_slip` | 它是否在打滑 |
+| `rew/collision` | 膝盖是否在撞地 |
+| `rew/action_rate`、`rew/joint_acceleration` | 它是否在抖动 |
 
-`rew/feet_air_time` deserves special attention. It is credited only on
-touchdown, so **exactly zero means no foot has ever landed, which means no foot
-has ever left the ground.** It is the single clearest "is this a gait or a
-shuffle" indicator in the whole log, and it is the trace that caught the failure
-in §13.5.
+`rew/feet_air_time` 值得特别关注。它只在触地时计入，所以**恰好为零意味着从来没有足落过地，也就意味着从来没有足离开过地面。** 它是整个日志中最清晰的“这是步态还是拖步”指标，也正是这条曲线抓住了 §13.5 中的失败。
 
 ### `curriculum/*`
 
-`level` should climb steadily and settle at 1.0. Pinned at 0 means the policy
-is not meeting the promotion threshold — check `tracking_score` against the
-do-nothing baseline (chapter 12, §12.4) before assuming the threshold is too
-strict.
+`level` 应当稳步爬升并稳定在 1.0。卡在 0 意味着策略没有达到晋级阈值——在认定阈值过严之前，先把 `tracking_score` 与什么都不做的基线（第 12 章 §12.4）比较一下。
 
-### `diagnostics/tracking_lin_err`, `tracking_ang_err`
+### `diagnostics/tracking_lin_err`、`tracking_ang_err`
 
-Direct, interpretable, in physical units. A well-trained policy on this task
-should reach roughly 0.1–0.2 m/s of linear tracking error.
+直接、可解释，并且以物理单位表示。在这个任务上训练良好的策略，线速度跟踪误差应当能达到大约 0.1–0.2 m/s。
 
 ### `time/fps`
 
-Throughput. Watch for it falling over a run — a memory leak, another process, or
-a callback doing something expensive per step. v1's curriculum callback made 8
-blocking IPC round trips *per environment step*; that shows up here and nowhere
-else.
+吞吐量。留意它是否在一次训练运行中逐渐下降——内存泄漏、其他进程，或者某个回调每一步都在做昂贵的事。v1 的课程回调*每个环境步*要进行 8 次阻塞式 IPC 往返；这会体现在这里，而且只会体现在这里。
 
-## 13.2 The order to read them in
+## 13.2 阅读它们的顺序
 
-When a run looks wrong:
+当一次训练运行看起来不对劲时：
 
-1. **`explained_variance`.** If it is near zero, stop. Nothing else is
-   meaningful until the critic works.
-2. **`ep_len_mean`.** Is it surviving at all? If not, the problem is
-   termination/stability, not the task.
-3. **`rew/feet_air_time`.** Is it a gait or a shuffle?
-4. **`rew/*` generally.** Which term is the largest? Is that the term you
-   intended to be largest?
-5. **`approx_kl` and `clip_fraction`.** Is the optimiser behaving?
-6. **`curriculum/level` against `tracking_score`.** Is the task advancing?
+1. **`explained_variance`。** 如果它接近零，就停下。在 critic 正常工作之前，其他一切都没有意义。
+2. **`ep_len_mean`。** 它到底能不能存活？如果不能，问题出在终止/稳定性上，而不在任务本身。
+3. **`rew/feet_air_time`。** 这是步态还是拖步？
+4. **`rew/*` 的总体情况。** 哪一项最大？那是你本来打算让它最大的那一项吗？
+5. **`approx_kl` 与 `clip_fraction`。** 优化器表现正常吗？
+6. **`curriculum/level` 对照 `tracking_score`。** 任务在推进吗？
 
-## 13.3 Failure modes, and what they look like
+## 13.3 失效模式及其表现
 
-### Standing still
+### 站着不动
 
-**Looks like:** `ep_len_mean` pinned at the truncation limit, `ep_rew_mean`
-respectable and flat, `explained_variance` high (a stationary robot is very
-predictable), **`rew/feet_air_time` exactly zero**, `tracking_lin_err` stuck
-around the mean commanded speed.
+**表现：** `ep_len_mean` 卡在截断上限，`ep_rew_mean` 尚可且平坦，`explained_variance` 很高（静止的机器人非常好预测），**`rew/feet_air_time` 恰好为零**，`tracking_lin_err` 停在平均指令速度附近。
 
-**Is:** the classic local optimum. The reward for doing nothing is close enough
-to the reward for succeeding that the intervening risk is not worth it.
+**本质：** 经典的局部最优。什么都不做的奖励与成功的奖励足够接近，以至于中间要冒的风险不值得。
 
-**Fix:** compute the do-nothing baseline (chapter 10, §10.4). Widen commands,
-sharpen the tracking kernel, raise the dense stepping reward.
+**修复：** 计算什么都不做的基线（第 10 章 §10.4）。拓宽指令范围，锐化跟踪核，提高稠密的迈步奖励。
 
-### Shuffling
+### 拖步
 
-**Looks like:** `rew/gait_phase` high, `rew/feet_air_time` small but non-zero,
-`rew/feet_slip` large and negative, forward speed below command.
+**表现：** `rew/gait_phase` 很高，`rew/feet_air_time` 很小但不为零，`rew/feet_slip` 是很大的负值，前进速度低于指令。
 
-**Is:** contacts toggling on schedule with almost no swing. The gait reward is
-satisfied without any real stride.
+**本质：** 接触按时间表切换，却几乎没有摆动。步态奖励在没有任何真正迈步的情况下就被满足了。
 
-**Fix:** raise `feet_air_time`; check the swing clearance is physically
-achievable (§13.5).
+**修复：** 提高 `feet_air_time`；检查摆动抬足高度在物理上是否可以达到（§13.5）。
 
-### Judder
+### 抖动
 
-**Looks like:** `rew/action_rate` and `rew/joint_acceleration` dominating the
-penalties; visually a high-frequency tremor.
+**表现：** `rew/action_rate` 和 `rew/joint_acceleration` 在各项惩罚中占主导；视觉上是一种高频震颤。
 
-**Fix:** raise those penalties; check the control rate is not too low; check
-`std` has not collapsed to near zero, which makes the deterministic policy's
-sharp features visible.
+**修复：** 提高这些惩罚；检查控制频率是否太低；检查 `std` 是否已坍缩到接近零——那会让确定性策略的尖锐特征暴露出来。
 
-### Policy collapse
+### 策略崩溃
 
-**Looks like:** `ep_rew_mean` falls off a cliff and does not recover.
-`approx_kl` spiked just beforehand.
+**表现：** `ep_rew_mean` 断崖式下跌且再也恢复不了。`approx_kl` 在此之前刚出现过尖峰。
 
-**Is:** chapter 5, §5.1 — too large a step, worse policy, worse data, no way
-back.
+**本质：** 第 5 章 §5.1——步子太大，策略变差，数据变差，再也回不去了。
 
-**Fix:** lower the learning rate, lower `n_epochs`, tighten `target_kl`, check
-`max_grad_norm`.
+**修复：** 降低学习率，降低 `n_epochs`，收紧 `target_kl`，检查 `max_grad_norm`。
 
-### Critic divergence
+### critic 发散
 
-**Looks like:** `train/value_loss` grows without bound, `explained_variance`
-goes negative and stays.
+**表现：** `train/value_loss` 无限增长，`explained_variance` 变为负值并一直保持。
 
-**Common cause:** treating truncation as termination (chapter 4, §4.7), which
-teaches the critic that states near the time limit are worthless while the
-observed returns say otherwise.
+**常见原因：** 把截断当作终止处理（第 4 章 §4.7），这会让 critic 学到时间上限附近的状态毫无价值，而观测到的回报却并非如此。
 
-## 13.4 What healthy looks like on this task
+## 13.4 在这个任务上健康的样子
 
-Approximate, for the default config at 16 environments:
+以下为近似值，对应默认配置、16 个环境：
 
-| Steps | `ep_len_mean` | `feet_air_time` | `tracking_lin_err` | `curriculum/level` |
+| 步数 | `ep_len_mean` | `feet_air_time` | `tracking_lin_err` | `curriculum/level` |
 |---|---|---|---|---|
-| 0–200k | rising from ~100 | ~0 | ~0.45 | 0 |
-| 200k–1M | 400–1000 | becoming non-zero | 0.35–0.45 | 0 |
-| 1M–4M | ~1000 | clearly positive | 0.2–0.35 | climbing |
-| 4M–10M | ~1000 | positive and stable | 0.1–0.2 | approaching 1.0 |
+| 0–200k | 从 ~100 开始上升 | ~0 | ~0.45 | 0 |
+| 200k–1M | 400–1000 | 开始变为非零 | 0.35–0.45 | 0 |
+| 1M–4M | ~1000 | 明显为正 | 0.2–0.35 | 爬升中 |
+| 4M–10M | ~1000 | 为正且稳定 | 0.1–0.2 | 接近 1.0 |
 
-`explained_variance` should be above 0.8 from a few hundred thousand steps
-onward. `std` should drift from 0.37 down toward 0.2.
+`explained_variance` 应当从几十万步开始就高于 0.8。`std` 应当从 0.37 逐渐漂移到 0.2 附近。
 
-## 13.5 A worked diagnosis
+## 13.5 一次完整的诊断实例
 
-This happened during development of v2 and is a complete example of the process.
+这件事发生在 v2 的开发过程中，是整个诊断流程的一个完整示例。
 
-**Symptom.** At 524k steps everything looked fine: `explained_variance` 0.91,
-`ep_len_mean` pinned at 1000 (never falling), `ep_rew_mean` climbing to 40,
-`rew/track_lin_vel_xy` at 77% of its maximum.
+**症状。** 在 524k 步时一切看起来都很好：`explained_variance` 0.91，`ep_len_mean` 卡在 1000（从不摔倒），`ep_rew_mean` 爬升到 40，`rew/track_lin_vel_xy` 达到其最大值的 77%。
 
-Except `rew/feet_air_time` was exactly $-0.0000$.
+唯独 `rew/feet_air_time` 恰好是 $-0.0000$。
 
-**Step 1 — read the zero literally.** That term is credited only on touchdown.
-Exactly zero means `feet_first_contact` is never 1, which means no foot ever
-leaves the ground. The robot was standing and leaning.
+**第 1 步——照字面理解这个零。** 这一项只在触地时计入。恰好为零意味着 `feet_first_contact` 从未为 1，也就意味着没有任何足离开过地面。机器人只是站着、往前倾。
 
-**Step 2 — ask what standing pays.** Twenty lines of numpy, no training
-required: sample commands from the configured ranges, set the robot's achieved
-velocity to zero, and evaluate the tracking terms.
+**第 2 步——问问站着不动能拿多少分。** 二十行 numpy，无需训练：从配置的范围中采样指令，把机器人实际达到的速度设为零，然后计算各跟踪项。
 
 ```
 A ROBOT THAT DOES NOTHING, under the initial command ranges:
@@ -236,105 +174,65 @@ A ROBOT THAT DOES NOTHING, under the initial command ranges:
   mean tracking_score        : 0.790  (curriculum threshold is 0.85)
 ```
 
-The policy's 0.77 was **barely above the do-nothing floor of 0.739**. It had
-learned almost nothing, and the reward function agreed that was fine.
+策略的 0.77 **仅仅略高于什么都不做的下限 0.739**。它几乎什么都没学到，而奖励函数也认为这样没问题。
 
-**Step 3 — ask whether the target behaviour is even reachable.** This is the
-step that is easy to skip and that separates "the reward is wrong" from "the
-robot cannot do it". Drive the environment with a hand-written open-loop trot —
-no policy, no learning — and measure.
+**第 3 步——问问目标行为到底能不能实现。** 这一步很容易被跳过，而它正是区分“奖励错了”和“机器人做不到”的关键。用手写的开环小跑来驱动环境——没有策略，没有学习——然后测量。
 
-First attempt: 0.12 s of maximum air time, schedule match 0.61. Barely off the
-ground.
+第一次尝试：最大腾空时间 0.12 s，时间表匹配度 0.61。几乎没有离地。
 
-A kinematic sweep said 0.25 rad of joint offset should retract a foot 5.9 cm,
-which is plenty for a trot needing 3–5 cm. So why 0.12 s?
+运动学扫描表明，0.25 rad 的关节偏移应当能把足收回 5.9 cm，对只需要 3–5 cm 的小跑来说绰绰有余。那为什么只有 0.12 s？
 
-**Because the trunk is not fixed.** While two legs retract, the other two carry
-the entire robot and sag further. Measured standing sag at $k_p=40$ is 2.8 cm on
-four legs, and roughly double that on two. The body drops by almost exactly as
-much as the swing foot rises, and the foot never clears.
+**因为躯干不是固定的。** 当两条腿收回时，另外两条腿要承担整台机器人的重量，会进一步下沉。在 $k_p=40$ 时，四腿站立测得的下沉量为 2.8 cm，两腿支撑时大约翻倍。机身下降的幅度几乎恰好等于摆动足抬起的幅度，于是足端始终离不开地面。
 
-Adding stance-leg extension to the script — the stance legs push down while the
-swing legs retract, which is what a real gait does — changed everything:
+在脚本中加入支撑腿伸展——支撑腿向下蹬的同时摆动腿收回，这正是真实步态的做法——一切都变了：
 
-| $k_p$ | scale | stance push | max air time | schedule match |
+| $k_p$ | 幅度 | 支撑腿蹬地 | 最大腾空时间 | 时间表匹配度 |
 |---|---|---|---|---|
-| 40 | 0.25 | no | 0.12 s | 0.61 |
-| 40 | 0.25 | yes | 0.24 s | 0.61 |
-| 40 | 0.35 | yes | 0.24 s | 0.74 |
-| 55 | 0.30 | yes | 0.20 s | **0.78** |
-| 80 | 0.35 | yes | 0.30 s | 0.84 |
+| 40 | 0.25 | 否 | 0.12 s | 0.61 |
+| 40 | 0.25 | 是 | 0.24 s | 0.61 |
+| 40 | 0.35 | 是 | 0.24 s | 0.74 |
+| 55 | 0.30 | 是 | 0.20 s | **0.78** |
+| 80 | 0.35 | 是 | 0.30 s | 0.84 |
 
-**Step 4 — conclude.** Two independent problems, both real:
+**第 4 步——得出结论。** 两个独立的问题，而且都真实存在：
 
-1. *Reward geometry.* Standing collected 74% of the tracking reward. Fixed by
-   widening the initial command ranges (0.739 → 0.488 do-nothing floor),
-   sharpening $\sigma_v$ from 0.25 to 0.20, and tripling the `gait_phase`
-   weight, which is the only dense term that pays for lifting a foot.
-2. *Physical headroom.* Foot clearance at $k_p=40$, scale 0.25 was marginal — the
-   policy would have had to discover simultaneous stance extension and swing
-   retraction just to get off the ground. Raising to $k_p=55$, scale 0.30 gives
-   the same coordination much more room. $k_p=80$ is better still on paper and
-   was rejected: that stiff, the policy starts exploiting contact impulses no
-   real actuator produces.
+1. *奖励几何。* 站着不动就拿到了 74% 的跟踪奖励。修复方法：拓宽初始指令范围（什么都不做的下限 0.739 → 0.488），把 $\sigma_v$ 从 0.25 锐化到 0.20，并把 `gait_phase` 的权重提高到三倍——它是唯一一个为抬足付费的稠密项。
+2. *物理余量。* 在 $k_p=40$、幅度 0.25 时，抬足高度处于临界——策略必须同时发现支撑腿伸展与摆动腿收回的配合，才能勉强离地。提高到 $k_p=55$、幅度 0.30，能给同样的配合留出大得多的空间。$k_p=80$ 在纸面上更好，但被否决了：刚到那种程度，策略就开始利用任何真实执行器都产生不了的接触冲量。
 
-**The transferable part** is step 3. When a policy will not learn a behaviour,
-script the behaviour open-loop and measure whether the environment can express
-it at all. If a hand-written controller cannot do it, no amount of reward tuning
-will help, and you have converted an open-ended search over hyperparameters into
-a bounded question about kinematics.
+**可以迁移的部分**是第 3 步。当策略学不会某个行为时，就用开环脚本把这个行为写出来，测量环境到底能不能表达它。如果手写控制器都做不到，再怎么调奖励也无济于事，而你也就把一场在超参数空间里的开放式搜索，转化成了一个关于运动学的有界问题。
 
-## 13.5b A second diagnosis: a reward with no gradient
+## 13.5b 第二次诊断：没有梯度的奖励
 
-Both fixes above were applied, and the next run still stalled — 1.1 million
-steps, `rew/feet_air_time` still zero, `rew/gait_phase` at 55% of its maximum.
+上面两项修复都已应用，下一次训练运行仍然停滞——110 万步，`rew/feet_air_time` 仍为零，`rew/gait_phase` 停在其最大值的 55%。
 
-55% is the tell. A robot with all four feet planted, under a trot schedule with
-duty 0.5, matches the two feet that are supposed to be in stance and mismatches
-the two that are supposed to be swinging: exactly 0.5. The policy was still
-standing, and this time the reward geometry was not the reason.
+55% 就是破绽所在。在占空比 0.5 的小跑时间表下，四足全部着地的机器人与应处于支撑相的两只足相符、与应处于摆动相的两只足不符：恰好 0.5。策略仍然站着不动，而这一次原因不在奖励几何。
 
-**The reward was not wrong. It was flat.**
+**奖励没有错。它是平的。**
 
-`gait_phase` is built on a **binary** contact flag. Measured on the standing
-robot, the foot geoms sit at 9.5 mm. Raising a foot to 9.4 mm does not change
-$c_i$, so it does not change the reward. The gradient is exactly zero right up
-to a discontinuity — and that discontinuity is the barrier a policy that has
-never stepped has to cross.
+`gait_phase` 建立在一个**二值**接触标志之上。在站立的机器人上测量，足端 geom 位于 9.5 mm 高度。把一只足稍微抬到 9.6 mm 并不会改变 $c_i$，因此也不会改变奖励。梯度一直恰好为零，直到遇上一个间断点——而这个间断点，正是一个从未迈过步的策略必须跨越的壁垒。
 
-| swing foot raised by | `gait_phase` | `feet_clearance` |
+| 摆动足抬高 | `gait_phase` | `feet_clearance` |
 |---|---|---|
 | 0.0 cm | 0.50 | $-0.00333$ |
 | 0.5 cm | 0.75 | $-0.00278$ |
 | 2.0 cm | 0.75 | $-0.00142$ |
 | 8.0 cm | 0.75 | $\phantom{-}0.00000$ |
 
-The fix was a new term, `feet_clearance`: a smooth quadratic cost on the height
-of each *swing* foot, which pulls the foot upward from the first millimetre.
+修复方法是新增一项 `feet_clearance`：对每只*摆动*足的高度施加一个平滑的二次代价，从第一毫米开始就把足往上拉。
 
-The general rule, and the reason this is worth a section of its own:
+一般性的规则，也是这件事值得单独成节的原因：
 
-> **A reward term defined on a thresholded quantity — a contact flag, a success
-> indicator, any boolean — is piecewise constant. A policy cannot climb a
-> staircase whose slope it cannot see.** Whenever a term is built on a boolean,
-> ask what continuous quantity underlies it, and reward that as well.
+> **定义在阈值化量上的奖励项——接触标志、成功指示、任何布尔量——都是分段常数。策略无法爬上一段它看不见坡度的楼梯。** 每当某一项建立在布尔量之上，就问问它背后是什么连续量，并把那个连续量也奖励进去。
 
-The diagnostic that catches this class of bug in general: for each reward term,
-ask what its **derivative with respect to the behaviour you want** is, in the
-region the policy currently occupies. If the answer is zero, that term cannot
-teach the behaviour no matter how heavily it is weighted.
+能在一般意义上抓住这类 bug 的诊断方法：对每个奖励项，在策略当前所处的区域里，问问它**对你想要的行为的导数**是多少。如果答案是零，那么无论权重多大，这一项都教不会这个行为。
 
-## 13.5c A third diagnosis: score the target behaviour directly
+## 13.5c 第三次诊断：直接给目标行为打分
 
-Two fixes in, the run still would not step. At that point the useful move is not
-another reward tweak — it is to stop reasoning about gradients and **measure what
-the reward actually pays for the behaviour you want**.
+两项修复之后，训练运行仍然不肯迈步。此时有用的做法不是再调一次奖励，而是停止对梯度的推理，**测量奖励实际上为你想要的行为支付了多少**。
 
-That is a twenty-line experiment. Drive the environment with a hand-scripted
-trot, drive it again with zero action, and print the per-term reward difference:
+这是一个二十行的实验。用手写脚本的小跑驱动环境，再用零动作驱动一次，然后打印逐项的奖励差：
 
-| term | standing | scripted trot | diff |
+| 项 | 站立 | 脚本小跑 | 差值 |
 |---|---|---|---|
 | `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
 | `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
@@ -342,39 +240,27 @@ trot, drive it again with zero action, and print the per-term reward difference:
 | `torques` | $-0.00074$ | $-0.00292$ | $-0.00218$ |
 | `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
 
-Before the fix, the `feet_air_time` row read $-0.08$ per step. The term's 0.5 s
-offset — borrowed from legged_gym, where the gait frequency is emergent — is
-larger than the scheduled swing time of 0.25 s at the commanded 2 Hz, so it was
-negative for **every correctly-timed step**. A perfect trot scored roughly four
-times worse than standing still (chapter 14, B19).
+在修复之前，`feet_air_time` 这一行的读数是每步 $-0.08$。该项 0.5 s 的偏移量——借鉴自 legged_gym，那里的步频是涌现出来的——大于在指令 2 Hz 下 0.25 s 的时间表规定的摆动时间，因此它对**每一个时机正确的迈步**都是负的。一次完美的小跑，得分比站着不动差大约四倍（第 14 章，B19）。
 
-The general procedure, and the one worth internalising:
+值得内化的一般流程：
 
-> **Score the target behaviour under your reward and compare it against the
-> trivial policy.** If the thing you want does not out-score doing nothing, the
-> problem is not exploration, not the learning rate, and not the algorithm. No
-> optimiser will find a behaviour your objective penalises.
+> **在你的奖励下给目标行为打分，并与平凡策略比较。** 如果你想要的东西得分不比什么都不做更高，那么问题就不在探索，不在学习率，也不在算法。没有任何优化器会找到一个被你的目标函数惩罚的行为。
 
-It takes minutes, it needs no training, and it would have caught all three of
-the stalls in this repository's history.
+它只需几分钟，不需要任何训练，而且本可以抓住本仓库历史上全部三次停滞。
 
-## 13.6 Sanity checks before you start
+## 13.6 开始之前的健全性检查
 
-`scripts/check_env.py` runs all of these in about ten seconds:
+`scripts/check_env.py` 会在大约十秒内运行以下所有检查：
 
-- nominal pose matches the model's `home` keyframe (bug B1)
-- the robot stands still under zero action without falling or oscillating
-- the gait schedule alternates as expected
-- 1000 random actions produce no NaN or infinite reward
-- every configured reward term appears in the info dict
-- the reward decomposition is printed, so you can see which term is loudest
-  *before* spending six hours finding out
+- 标称姿态与模型的 `home` 关键帧一致（bug B1）
+- 机器人在零动作下能站稳，不摔倒也不振荡
+- 步态时间表按预期交替
+- 1000 个随机动作不会产生 NaN 或无穷大的奖励
+- 每一个配置的奖励项都出现在 info 字典中
+- 打印奖励分解，这样你就能在花六个小时才发现问题*之前*，看到哪一项最响
 
-The last is worth more than it sounds. If a term you meant to be a minor
-regulariser is 40% of the gross reward, you will discover it in ten seconds
-rather than in a training curve.
+最后一项比听起来更有价值。如果一个你本打算当作次要正则项的项占了总奖励的 40%，你会在十秒内发现它，而不是在训练曲线里才发现。
 
 ---
 
-**Previous:** [12. Curriculum and domain randomisation](12-curriculum-and-domain-randomization.md) ·
-**Next:** [14. The debugging log](14-debugging-log.md)
+**上一章：** [12. 课程学习与域随机化](12-curriculum-and-domain-randomization.md) · **下一章：** [14. 调试日志](14-debugging-log.md)

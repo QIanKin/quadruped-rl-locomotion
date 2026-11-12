@@ -1,264 +1,154 @@
-# Worklog
+# 工作日志
 
-A running record of what has been done, what is true right now, and what is
-next. Updated as work happens.
+一份持续更新的记录：做了什么、此刻什么是成立的、接下来做什么。随工作进展而更新。
 
-This is the *narrative*. For the **explanation** of how any of it works — the
-RL maths, the robot, the reward design — see [the book](README.md), 17 chapters
-starting at [chapter 1](01-what-is-rl.md). For the **defect list** with evidence
-and reasoning, see [chapter 14](14-debugging-log.md). This file exists so that
-someone returning after a month can reconstruct the state in five minutes
-without reading either.
+这是*叙事*。关于其中任何部分如何运作的**讲解**——RL 数学、机器人、奖励设计——见[本书](README.md)，共 17 章，从[第 1 章](01-what-is-rl.md)开始。关于附带证据与推理过程的**缺陷清单**，见[第 14 章](14-debugging-log.md)。这个文件存在的意义是：让一个时隔一个月回来的人，不必读上述任何一份，就能在五分钟内重建当前状态。
 
 ---
 
-## Status at a glance
+## 状态一览
 
-*Last updated: 2026-09-11*
+*最后更新：2026-09-11*
 
 | | |
 |---|---|
-| Branch | `master`, pushed |
-| Tests | 83 (82 run on CPU, 1 needs a GPU), all passing (`make test`) |
-| Trained policy | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl` (CPU, trained before the B21 fix) |
-| Training run | 18.76M steps, 16 envs, seed 0, ~8 h at ~600 steps/s |
-| CPU training | works |
-| GPU training | **works since B22** — 2M-step smoke policy walks in the CPU env (100% survival); full run pending |
+| 分支 | `master`，已推送 |
+| 测试 | 83 个（82 个在 CPU 上运行，1 个需要 GPU），全部通过（`make test`） |
+| 已训练策略 | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl`（CPU，在 B21 修复之前训练） |
+| 训练运行 | 18.76M 步，16 个环境，随机种子 0，约 8 h，速度约 600 steps/s |
+| CPU 训练 | 可用 |
+| GPU 训练 | **自 B22 起可用**——2M 步的冒烟测试策略在 CPU 环境中能够行走（100% 存活）；完整训练运行待进行 |
 
-**What the policy does.** Tracks velocity commands to 0.021 m/s (forward),
-0.028 m/s (lateral) and 0.035 rad/s (yaw) over 30 random commands from the
-trained envelope, 100% survival, mean 2.00 of 4 feet in contact. Trots at
-96.0% schedule match with a duty factor of exactly 0.500 and stride frequency
-exactly the commanded 2.00 Hz. Drivable by hand with `make play`.
+**策略能做什么。** 在从训练范围（trained envelope）中随机抽取的 30 个指令上，速度指令的跟踪误差为 0.021 m/s（前向）、0.028 m/s（侧向）和 0.035 rad/s（偏航），100% 存活，平均 4 只脚中有 2.00 只着地。以小跑前进，与步态时间表的匹配度为 96.0%，占空比恰好为 0.500，步频恰好等于指令的 2.00 Hz。可以用 `make play` 手动操控。
 
-**What it does not do.** Change gait on command (trained on trot only — the
-gait identity is not in its observation, see [11 §11.8](11-gaits-and-phase.md)).
-Exceed ~0.85 m/s. Transfer to hardware ([16](16-sim-to-real.md)).
+**它做不到什么。** 按指令切换步态（只用小跑训练——步态类型不在它的观测中，见[第 11 章 §11.8](11-gaits-and-phase.md)）。速度超过约 0.85 m/s。迁移到实体硬件（[第 16 章](16-sim-to-real.md)）。
 
 ---
 
-## Decision log
+## 决策记录
 
-Choices that would be expensive to rediscover, with why and whether they still
-hold.
+那些一旦遗忘、重新摸索代价高昂的选择，附上理由以及它们是否仍然成立。
 
-| Decision | Rationale | Status |
+| 决策 | 理由 | 状态 |
 |---|---|---|
-| Nominal pose from the `home` keyframe | `qpos0` puts the calf joints outside their own limits (B1) | settled |
-| All velocities in the base frame | world-frame tracking makes turning incoherent (B2) | settled |
-| Gait as a commanded phase clock, not emergent | emergent gaits are uncontrollable and exploration cannot find a limit cycle unaided ([11](11-gaits-and-phase.md)) | settled |
-| Reward terms as separate pure functions | ablation by config, per-term logging, unit-testable in isolation | settled |
-| Weights are per second, scaled by `dt` | changing control rate must not silently rescale the objective | settled |
-| $k_p=55$, $\alpha=0.40$ | measured: sag eats swing clearance (B17), stride sets top speed (B20), and $k_p\alpha=22$ N·m caps against the 23.7 N·m actuator limit | settled |
-| Commands clamped to a measured speed envelope | infeasible commands saturate the tracking kernel and become noise (B20) | settled |
-| CPU MuJoCo env stays canonical; MJX is an accelerator | MJX uses simplified collision geometry, so evaluation must happen on the unsimplified model | settled |
-| Reward maths shared between backends via `_backend()` | two implementations of a 17-term reward will diverge silently | settled, tested |
-| Actor keeps privileged base linear velocity | sim-to-real is out of scope; with no asymmetry there is nothing for an asymmetric critic to exploit ([2 §2.6](02-value-functions-and-policies.md)) | revisit for hardware |
-| `gaits: ["trot"]` only | multi-gait needs the per-foot clock in the observation | **open — next task** |
+| 名义姿态取自 `home` 关键帧 | `qpos0` 会让小腿关节超出其自身的限位（B1） | 已定 |
+| 所有速度都在基座坐标系中表示 | 在世界坐标系中跟踪会让转向变得不自洽（B2） | 已定 |
+| 步态作为指令给定的相位时钟，而非自发涌现 | 涌现的步态无法控制，而且探索在没有辅助的情况下找不到极限环（[第 11 章](11-gaits-and-phase.md)） | 已定 |
+| 奖励项写成相互独立的纯函数 | 可通过配置做消融、可逐项记录日志、可单独做单元测试 | 已定 |
+| 权重以“每秒”为单位，并按 `dt` 缩放 | 改变控制频率不能悄无声息地重新缩放优化目标 | 已定 |
+| $k_p=55$，$\alpha=0.40$ | 实测结果：下垂会吃掉摆动抬足高度（B17），步幅决定最高速度（B20），而 $k_p\alpha=22$ N·m 恰好卡在 23.7 N·m 的执行器上限之下 | 已定 |
+| 指令被限制在实测的速度范围内 | 不可行的指令会使跟踪核饱和，沦为噪声（B20） | 已定 |
+| CPU MuJoCo 环境保持为基准；MJX 只是加速器 | MJX 使用简化的碰撞几何，所以评估必须在未简化的模型上进行 | 已定 |
+| 奖励数学通过 `_backend()` 在两个后端之间共享 | 一个 17 项奖励的两份实现会悄无声息地出现分歧 | 已定，有测试 |
+| Actor 保留特权信息基座线速度 | 仿真到现实不在范围内；既然没有不对称，非对称 critic 也就没有可利用之处（[第 2 章 §2.6](02-value-functions-and-policies.md)） | 上硬件时再议 |
+| 仅 `gaits: ["trot"]` | 多步态需要在观测中加入逐足时钟 | **未决——下一项任务** |
 
 ---
 
-## Log
+## 日志
 
-### 2026-09-11 — GPU policies run on the CPU environment
+### 2026-09-11 —— GPU 策略在 CPU 环境上运行
 
-`envs/brax_policy.py` runs a brax-trained policy with NumPy alone: normalise,
-three SiLU layers, `tanh` of the first half of the output. `mjx/export_policy.py`
-turns brax's pickle (which needs brax to unpickle) into an `.npz`, and
-`mjx/train_mjx.py` now writes one automatically after training. `evaluate.py`
-and `play.py` accept `--model *.npz`, so GPU policies can be measured and driven
-exactly like SB3 ones.
+`envs/brax_policy.py` 只用 NumPy 就能运行一个由 brax 训练出的策略：归一化、三个 SiLU 层、对输出前半部分取 `tanh`。`mjx/export_policy.py` 把 brax 的 pickle（需要 brax 才能反序列化）转换成 `.npz`，而 `mjx/train_mjx.py` 现在会在训练结束后自动写出一个。`evaluate.py` 和 `play.py` 接受 `--model *.npz`，因此 GPU 策略可以完全像 SB3 策略一样被测量和操控。
 
-The forward pass is re-derived by hand, so `tests/test_brax_policy.py` checks it
-against brax's own `make_inference_fn(deterministic=True)` on real PPO networks
-with a non-trivial normaliser. Mutation-checked: it fails on a wrong activation,
-a skipped normaliser, and the loc/scale halves swapped. A second test asserts
-loading a policy imports none of jax, brax or flax.
+前向传播是手工重新推导的，所以 `tests/test_brax_policy.py` 在真实的 PPO 网络、并带有非平凡归一化器的条件下，将它与 brax 自己的 `make_inference_fn(deterministic=True)` 进行对比。做过变异检查：激活函数写错、跳过归一化器、loc/scale 两半互换，它都会失败。第二个测试断言加载策略时不会导入 jax、brax 或 flax 中的任何一个。
 
-First GPU policy on the CPU simulator — the 2M-step smoke run, 10 random
-commands from the trained envelope:
+GPU 策略首次在 CPU 模拟器上运行——2M 步的冒烟测试运行，从训练范围中随机抽取 10 个指令：
 
-| | GPU, 2M steps | CPU, 18.8M steps |
+| | GPU，2M 步 | CPU，18.8M 步 |
 |---|---|---|
-| mean vx / vy error | 0.072 / 0.082 m/s | 0.021 / 0.028 m/s |
-| mean yaw-rate error | 0.199 rad/s | 0.035 rad/s |
-| survival | 100% | 100% |
-| feet in contact | 2.36 / 4 | 2.00 / 4 |
+| 平均 vx / vy 误差 | 0.072 / 0.082 m/s | 0.021 / 0.028 m/s |
+| 平均偏航角速度误差 | 0.199 rad/s | 0.035 rad/s |
+| 存活率 | 100% | 100% |
+| 着地脚数 | 2.36 / 4 | 2.00 / 4 |
 
-It transfers across the MJX→CPU collision-model gap and survives every command
-after about a tenth of the training. The 2.36 feet in contact says the trot is
-not clean yet. Not yet verified end-to-end: the automatic export at the end of
-`train_mjx.py` (the export function itself is tested; the call site runs only
-at the end of a training run).
+它跨越了 MJX→CPU 的碰撞模型差距，并且只用了大约十分之一的训练量，就能在每个指令下存活。2.36 只脚着地说明小跑还不够干净。尚未端到端验证的是：`train_mjx.py` 结束时的自动导出（导出函数本身有测试；调用处只在训练运行结束时才执行）。
 
-### 2026-09-11 — B22: the GPU robot was never being controlled
+### 2026-09-11 —— B22：GPU 上的机器人从未真正被控制
 
-The first real GPU smoke run went NaN at 491k steps. The earlier signal was
-better: brax's step-0 eval runs a near-zero-action policy, and those episodes
-lasted 27 steps and got *shorter* with training.
+第一次真正的 GPU 冒烟测试运行在 491k 步时出现了 NaN。更早出现的那个信号其实更有价值：brax 在第 0 步的评估运行的是一个近似零动作的策略，而那些回合只持续了 27 步，并且随着训练变得*更短*。
 
-Driving `Go2MJXEnv` directly at zero action (256 envs, no brax wrappers) showed
-the robot jumping 9 cm off the floor by step 11 and 239 of 256 environments
-dead by step 30 — identically with randomisation and pushes on or off, and with
-no NaN in the physics. Cause: Menagerie's `scene_mjx.xml` uses *position*
-actuators (ctrl is a joint angle), `scene.xml` uses *motors* (ctrl is a torque),
-and the env writes torques. Every calf was driven to its straight-leg limit.
-Full write-up in [chapter 14, B22](14-debugging-log.md); B21 is written up there
-now too.
+在零动作下直接驱动 `Go2MJXEnv`（256 个环境，不加 brax 包装器）显示：机器人在第 11 步时已经跳离地面 9 cm，到第 30 步时 256 个环境中有 239 个已经死亡——无论随机化和推力扰动开还是关，结果完全相同，而且物理仿真中没有任何 NaN。原因：Menagerie 的 `scene_mjx.xml` 使用的是*位置*执行器（ctrl 是关节角度），`scene.xml` 使用的是*电机*（ctrl 是力矩），而环境写入的是力矩。每条小腿都被驱动到了腿伸直时的限位。完整记录见[第 14 章 B22](14-debugging-log.md)；B21 现在也已在那里写好。
 
-Fix: `make_torque_actuators()` converts the MJX actuators to motors with the CPU
-model's limits, so the PD law stays identical across backends. After it, zero
-action gives 0 of 256 terminated, 4.00 of 4 feet down, and a settled height of
-0.252 m against the CPU's 0.254 m. Two regression tests, both confirmed to fail
-with the fix reverted.
+修复：`make_torque_actuators()` 把 MJX 的执行器转换为采用 CPU 模型限值的电机，使 PD 控制律在两个后端之间保持一致。修复后，零动作下 256 个环境中 0 个终止，4 只脚中 4.00 只着地，稳定高度为 0.252 m，而 CPU 为 0.254 m。两个回归测试，都已确认在撤销修复后会失败。
 
-2M-step smoke run after the fix (2048 envs, seed 0, all robustness features on):
+修复后的 2M 步冒烟测试运行（2048 个环境，随机种子 0，所有鲁棒性特性全部开启）：
 
-| step | eval reward | episode length |
+| 步数 | 评估奖励 | 回合长度 |
 |---|---|---|
 | 0 | 20.47 | 1000 |
 | 0.98M | 35.56 | 1000 |
 | 2.21M | 56.22 | 1000 |
 
-Monotonic at every one of ten evals, full-length episodes throughout, no NaN.
-About 30 minutes wall-clock, of which roughly 10 was XLA compiling the eval
-loop (it prints a "very slow compile" warning; that is normal here). Saved as
-`models/go2_mjx_smoke2m.pkl`.
+十次评估中每一次都单调上升，全程都是满长度回合，没有 NaN。墙钟时间约 30 分钟，其中大约 10 分钟是 XLA 在编译评估循环（它会打印一条“very slow compile”警告；在这里这是正常的）。保存为 `models/go2_mjx_smoke2m.pkl`。
 
-This proves the pipeline learns. It does not prove the robot walks: there is no
-way yet to run a brax policy in the CPU environment (open item 1).
+这证明了流水线能学习。但它不能证明机器人会走：目前还没有办法在 CPU 环境中运行 brax 策略（待办事项 1）。
 
-Two earlier smoke attempts that day died as clean VM shutdowns with no error.
-That was WSL being migrated to a new drive mid-run, not the code — noted so
-nobody chases it.
+那天更早的两次冒烟测试尝试都以干净的虚拟机关机告终，没有任何报错。那是 WSL 在运行途中被迁移到新硬盘，而不是代码的问题——记在这里，免得有人去追查。
 
-### 2026-08-31 — GPU training path (in progress)
+### 2026-08-31 —— GPU 训练路径（进行中）
 
-Assessed the hardware for the MJX/GPU path.
+评估了用于 MJX/GPU 路径的硬件。
 
-- **GPU: RTX 3050 Laptop, 4 GB VRAM.** This matters. The literature figure of
-  4096 parallel environments assumes a datacentre card; 4 GB will support far
-  fewer. The env count needs measuring, not assuming — same discipline as B20.
-- WSL2 Ubuntu present, CUDA driver visible inside it
-  (`/usr/lib/wsl/lib/libcuda.so`), Python 3.12.3, 937 GB free.
-- No `sudo` needed for the install itself: JAX ships CUDA as pip wheels, so a
-  plain venv suffices.
-- **Blocked:** `/etc/wsl.conf` sets `generateResolvConf = false` and
-  `/etc/resolv.conf` does not exist, so WSL has no DNS. Routing is fine (TCP to
-  `1.1.1.1:53` succeeds). `sudo` requires a password. Fix is one command, run by
-  the user:
+- **GPU：RTX 3050 Laptop，4 GB 显存。** 这一点很重要。文献中 4096 个并行环境的数字假定的是数据中心级显卡；4 GB 能支撑的数量要少得多。环境数量需要测量，而不是假设——与 B20 同样的纪律。
+- 已有 WSL2 Ubuntu，其内部可以看到 CUDA 驱动（`/usr/lib/wsl/lib/libcuda.so`），Python 3.12.3，937 GB 可用空间。
+- 安装本身不需要 `sudo`：JAX 以 pip wheel 的形式提供 CUDA，所以一个普通的 venv 就够了。
+- **受阻：** `/etc/wsl.conf` 设置了 `generateResolvConf = false`，而 `/etc/resolv.conf` 不存在，所以 WSL 没有 DNS。路由没有问题（到 `1.1.1.1:53` 的 TCP 连接成功）。`sudo` 需要密码。修复只需一条命令，由用户运行：
   ```
   sudo bash -c 'printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf'
   ```
-  Chosen over re-enabling `generateResolvConf` because that flag was set
-  deliberately and is probably load-bearing for the ROS setup on this machine.
+  之所以选择这样做而不是重新启用 `generateResolvConf`，是因为那个标志是有意设置的，很可能是这台机器上 ROS 环境的关键依赖。
 
-### 2026-08-31 — `743cc64` Model paths resolve against the repository
+### 2026-08-31 —— `743cc64` 模型路径相对于仓库解析
 
-Running any script by absolute path from outside the repo root died in
-`MjModel.from_xml_path` with `ParseXML: Error opening file`, naming neither the
-file nor the reason. `resolve_asset_path()` now falls back to the repo root and,
-on genuine absence, raises an error naming both directories searched and the
-`git clone` that fixes it. Two regression tests.
+从仓库根目录之外用绝对路径运行任何脚本，都会在 `MjModel.from_xml_path` 中以 `ParseXML: Error opening file` 崩溃，既不说是哪个文件，也不说原因。`resolve_asset_path()` 现在会回退到仓库根目录，并且在文件确实不存在时抛出一个错误，指明搜索过的两个目录，以及能解决问题的那条 `git clone`。两个回归测试。
 
-Also capped the demo GIF: it was 38 MB, now 7.7 MB.
+另外给演示 GIF 设了大小上限：原来 38 MB，现在 7.7 MB。
 
-### 2026-08-31 — `6feb8e7` Results
+### 2026-08-31 —— `6feb8e7` 结果
 
-Training reached 18.76M of 20M steps before the process died with the session;
-the save-on-exit path held. Evaluated properly for the first time. Numbers in
-[chapter 15](15-results.md); headline is 0.021 / 0.028 m/s and 0.035 rad/s
-tracking with 100% survival.
+训练在 20M 步中跑到 18.76M 步时，进程随会话一同终止；退出时保存的机制起了作用。第一次进行了正规的评估。数字见[第 15 章](15-results.md)；核心结论是 0.021 / 0.028 m/s 和 0.035 rad/s 的跟踪误差，以及 100% 存活。
 
-Found and fixed a flaw in my own measurement: `evaluate.py` was sampling random
-commands *wider than the trained envelope*, which measures extrapolation rather
-than tracking, and was inflating the reported forward error from 0.021 to
-0.152 m/s. It now reads the trained ranges from the config, with
-`--full-envelope` to probe extrapolation deliberately.
+发现并修复了我自己测量中的一个缺陷：`evaluate.py` 抽取的随机指令*超出了训练范围*，这测的是外推而不是跟踪，并把报告的前向误差从 0.021 虚增到了 0.152 m/s。它现在从配置中读取训练范围，并提供 `--full-envelope` 用于有意地探测外推能力。
 
-### 2026-08-28 — `3956d74` B20, and the end of three stalls
+### 2026-08-28 —— `3956d74` B20，以及三次停滞的终结
 
-Three successive runs stalled with the robot standing or trotting on the spot.
-Each stall had a distinct cause, and each was found by measurement rather than
-by tuning:
+连续三次训练运行都停滞了，机器人要么站着不动，要么原地小跑。每次停滞都有各自不同的原因，而且每一个都是靠测量而不是靠调参找到的：
 
-1. **B18** — `gait_phase` is built on a binary contact flag, so its gradient
-   toward stepping is exactly zero until a foot breaks contact. Added
-   `feet_clearance`, a smooth cost on swing-foot height.
-2. **B19** — the stride reward, inherited from legged_gym, made a *correct trot
-   score four times worse than standing still*. Its 0.5 s offset assumes an
-   emergent gait frequency; here frequency is commanded, so at 2 Hz the
-   scheduled swing is 0.25 s and every correctly-timed step scored −0.25.
-3. **B20** — the command envelope asked for 1.5 m/s when the leg geometry
-   delivers ~0.4 m/s at 2 Hz at the then-current action scale. Unreachable
-   commands saturate the exponential tracking kernel, so the policy gets no
-   gradient and the command channel becomes noise.
+1. **B18** —— `gait_phase` 建立在一个二值的接触标志之上，所以在某只脚离开接触之前，它朝向迈步的梯度恰好为零。新增了 `feet_clearance`，一个关于摆动足高度的平滑代价。
+2. **B19** —— 从 legged_gym 继承来的步幅奖励，让*正确的小跑得分比站着不动差四倍*。它的 0.5 s 偏移假设步态频率是自发涌现的；而这里频率是指令给定的，所以在 2 Hz 下，计划的摆动时长是 0.25 s，每一个时机正确的迈步都得到 −0.25 分。
+3. **B20** —— 指令范围要求 1.5 m/s，而在当时的动作缩放下，腿部几何在 2 Hz 时只能提供约 0.4 m/s。无法达到的指令会使指数跟踪核饱和，于是策略得不到梯度，指令通道沦为噪声。
 
-The generalisable check, now the first thing `make check` prints: **score your
-target behaviour under your reward and compare it against doing nothing.** If
-the thing you want does not out-score the trivial policy, no algorithm finds it.
+可推广的检查，如今是 `make check` 打印的第一项内容：**用你的奖励给你的目标行为打分，并把它与什么都不做相比较。** 如果你想要的东西得分超不过平凡策略，那么任何算法都找不到它。
 
-### 2026-08-28 — `f4640fb` The v2 rewrite
+### 2026-08-28 —— `f4640fb` v2 重写
 
-Sixteen defects in the v1 environment and training script, none of which
-produced an error message, all of which survived five documented training runs.
-Full evidence in [chapter 14](14-debugging-log.md). The root cause of v1's
-ceiling: the nominal pose was `qpos0`, which places all four calf joints
-**outside their own travel limits**, and the policy's reachable target set did
-not intersect the calf's legal range at all.
+v1 环境和训练脚本中有十六个缺陷，没有一个产生过错误信息，全部挺过了五次有记录的训练运行。完整证据见[第 14 章](14-debugging-log.md)。v1 性能天花板的根本原因：名义姿态是 `qpos0`，它把四个小腿关节全都放在了**其自身行程限位之外**，而策略可达的目标集合与小腿的合法范围完全没有交集。
 
-Added in the same pass: command-conditioned locomotion, the gait phase clock,
-17 reward terms as pure functions, a closed-loop curriculum, an annotated
-from-scratch PPO, the MJX backend, 67 tests, and the 17-chapter book.
+同一轮中新增：以指令为条件的运动控制、步态相位时钟、写成纯函数的 17 个奖励项、闭环课程、带注释的从零实现的 PPO、MJX 后端、67 个测试，以及这本 17 章的书。
 
 ---
 
-## Open items
+## 待办事项
 
-Ordered by what I would do next.
+按我接下来会做的顺序排列。
 
-1. ~~Evaluate a GPU policy on the CPU environment.~~ Done — `envs/brax_policy.py`,
-   `mjx/export_policy.py`; `evaluate.py` and `play.py` take `--model *.npz`.
-1b. **Full GPU run**, then evaluate it with `evaluate.py --model ... .npz --grid`. Replaces the B21 caveat in the
-   README with a clean result.
-2. **Multi-gait.** The mechanism exists and is unused. Swap the observation's
-   2-number global clock for the 8-number per-foot clock (`clock_signal` in
-   `envs/gait.py`), bump `obs_dim`, mirror in `mjx/mjx_env.py`, widen `gaits` in
-   the config, update the test asserting 50 dims. Then retrain. This is the last
-   capability gap the README admits to.
-3. ~~Push the branch.~~ Done.
-4. **From-scratch PPO parity run.** `ppo_from_scratch/` has never been run
-   against SB3 on a matched seed. That comparison is the payoff for writing it.
-5. **Rough terrain.** `scripts/generate_terrain.py` and
-   `configs/terrain_rough.xml` survive from v1 as a starting point.
-6. **Sim-to-real.** The ordered list is [chapter 16 §16.8](16-sim-to-real.md).
-   Step 1 is dropping base linear velocity from the actor, which everything
-   else depends on.
+1. ~~在 CPU 环境上评估 GPU 策略。~~ 已完成——`envs/brax_policy.py`、`mjx/export_policy.py`；`evaluate.py` 和 `play.py` 接受 `--model *.npz`。
+1b. **完整的 GPU 训练运行**，然后用 `evaluate.py --model ... .npz --grid` 评估它。用一个干净的结果替换 README 中关于 B21 的附加说明。
+2. **多步态。** 机制已经存在，只是没有使用。把观测中 2 个数的全局时钟换成 8 个数的逐足时钟（`envs/gait.py` 中的 `clock_signal`），增大 `obs_dim`，在 `mjx/mjx_env.py` 中做相同修改，在配置中放宽 `gaits`，更新断言 50 维的那个测试。然后重新训练。这是 README 所承认的最后一个能力缺口。
+3. ~~推送分支。~~ 已完成。
+4. **从零实现的 PPO 一致性运行。** `ppo_from_scratch/` 从未在匹配的随机种子下与 SB3 进行对比运行。这个对比才是写它的回报。
+5. **崎岖地形。** `scripts/generate_terrain.py` 和 `configs/terrain_rough.xml` 从 v1 保留了下来，可以作为起点。
+6. **仿真到现实。** 有序清单见[第 16 章 §16.8](16-sim-to-real.md)。第 1 步是从 actor 中去掉基座线速度，其余一切都依赖于这一步。
 
-## Known traps on this machine
+## 本机已知的坑
 
-- **WSL has no DNS** unless `/etc/resolv.conf` is written by hand;
-  `generateResolvConf = false` is set in `/etc/wsl.conf` and WSL therefore never
-  creates the file. Restore WSL's own backup:
-  `wsl -d Ubuntu -u root cp /etc/resolv.conf.wslbak /etc/resolv.conf`.
-  All four candidate resolvers (`10.255.255.254`, the gateway, `1.1.1.1`,
-  `8.8.8.8`) answer once the file exists - the missing file is the whole fault,
-  so `generateResolvConf = false` can stay as set.
-- **`sudo` in WSL requires a password, but `wsl -u root` does not.** Any admin
-  step is a passwordless one-liner from PowerShell.
-- **`python3-venv` is not installed** and `apt` needs root, so
-  `python3 -m venv` fails on `ensurepip`. Sidestep it without root:
-  `python3 -m venv --without-pip`, then bootstrap pip inside the venv with
-  PyPA's `get-pip.py`.
-- **Put WSL venvs on ext4 (`~`), not `/mnt/d`.** The 9p filesystem makes
-  imports and package installs painfully slow.
-- **PowerShell 5.1 does not accept `&&`** as a statement separator. Use `;`.
-- **`make` needs the venv path on Windows:** `make PY=venv/Scripts/python.exe …`
-- **`brax` 0.14.2 calls `jax.device_put_replicated`**, removed in JAX 0.11.
-  `requirements-mjx.txt` pins JAX 0.7.2 for this reason.
-- **`pip install -r requirements.txt` gives the CPU build of PyTorch.**
-- **brax's `num_evals` defaults to 1.** `progress_fn` fires once per eval, so a
-  long run prints *nothing* until it finishes. Combined with piping through
-  `grep` (which block-buffers on a non-tty), a healthy 2-hour run is
-  indistinguishable from a hung one. `mjx/train_mjx.py` now defaults
-  `--num-evals 20` and flushes; never pipe a long run through `grep`.
+- **WSL 没有 DNS**，除非手动写入 `/etc/resolv.conf`；`/etc/wsl.conf` 中设置了 `generateResolvConf = false`，因此 WSL 永远不会创建这个文件。恢复 WSL 自己的备份：`wsl -d Ubuntu -u root cp /etc/resolv.conf.wslbak /etc/resolv.conf`。一旦该文件存在，全部四个候选解析器（`10.255.255.254`、网关、`1.1.1.1`、`8.8.8.8`）都会响应——文件缺失就是全部的故障所在，所以 `generateResolvConf = false` 可以保持原样。
+- **WSL 中的 `sudo` 需要密码，但 `wsl -u root` 不需要。** 任何管理员操作都可以在 PowerShell 中用一条无需密码的命令完成。
+- **没有安装 `python3-venv`**，而 `apt` 需要 root，所以 `python3 -m venv` 会在 `ensurepip` 处失败。不用 root 也能绕过：先执行 `python3 -m venv --without-pip`，再在 venv 内用 PyPA 的 `get-pip.py` 引导安装 pip。
+- **把 WSL 的 venv 放在 ext4（`~`）上，而不是 `/mnt/d`。** 9p 文件系统会让导入和安装包慢得令人痛苦。
+- **PowerShell 5.1 不接受 `&&`** 作为语句分隔符。请用 `;`。
+- **在 Windows 上 `make` 需要指定 venv 路径：** `make PY=venv/Scripts/python.exe …`
+- **`brax` 0.14.2 调用了 `jax.device_put_replicated`**，而它在 JAX 0.11 中已被移除。`requirements-mjx.txt` 因此将 JAX 固定在 0.7.2。
+- **`pip install -r requirements.txt` 装上的是 CPU 版本的 PyTorch。**
+- **brax 的 `num_evals` 默认为 1。** `progress_fn` 每次评估触发一次，所以一次长时间运行在结束前*什么都不会*打印。再加上通过管道输出给 `grep`（它在非 tty 下会进行块缓冲），一次健康的 2 小时运行与一次卡死的运行看起来毫无区别。`mjx/train_mjx.py` 现在默认 `--num-evals 20` 并会刷新输出；永远不要把长时间运行通过管道输出给 `grep`。

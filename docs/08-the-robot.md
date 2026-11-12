@@ -1,57 +1,45 @@
-# 8. The Go2, MuJoCo, and PD control
+# 8. Go2、MuJoCo 与 PD 控制
 
-This chapter is about the physical system. It is independent of which RL
-algorithm you use, and getting it wrong makes the algorithm irrelevant — as v1
-demonstrated.
+本章讲的是物理系统。它与你使用哪种强化学习算法无关，而一旦把它搞错，算法就无关紧要了——v1 已经证明了这一点。
 
-## 8.1 The robot
+## 8.1 机器人
 
-The Unitree Go2 is a 15.2 kg quadruped with twelve actuated joints, three per
-leg. The model used here is `unitree_go2/scene.xml` from
-[MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie).
+Unitree Go2 是一台 15.2 kg 的四足机器人，有十二个主动关节，每条腿三个。这里使用的模型是 [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) 中的 `unitree_go2/scene.xml`。
 
-Mass distribution, from the model:
+模型中的质量分布：
 
-| Body | Mass (kg) | ×4 legs |
+| 部件 | 质量（kg） | ×4 条腿 |
 |---|---|---|
-| trunk (`base`) | 6.921 | — |
-| hip | 0.678 | 2.712 |
-| thigh | 1.152 | 4.608 |
-| calf | 0.241 | 0.964 |
-| **total** | | **15.206** |
+| 躯干（`base`） | 6.921 | — |
+| 髋 | 0.678 | 2.712 |
+| 大腿 | 1.152 | 4.608 |
+| 小腿 | 0.241 | 0.964 |
+| **总计** | | **15.206** |
 
-Just under half the mass is in the trunk. That matters: the legs are light
-relative to the body, so their swing dynamics barely perturb the trunk, and a
-quasi-static view of the body with fast legs is a reasonable mental model.
+将近一半的质量集中在躯干上。这一点很重要：腿相对于身体很轻，所以腿的摆动动力学几乎不会扰动躯干，把身体看作准静态、腿看作快速运动，是一个合理的心智模型。
 
-### Joints and their conventions
+### 关节及其约定
 
-Each leg has **hip** (abduction/adduction, rotates the leg sideways), **thigh**
-(hip flexion, swings the leg fore-aft), and **calf** (knee).
+每条腿有**髋**关节（外展/内收，使腿向侧面转动）、**大腿**关节（髋部屈伸，使腿前后摆动）和**小腿**关节（膝）。
 
-Joint ordering in `qpos[7:]` and in every action vector is
-**FL, FR, RL, RR**, each as `(hip, thigh, calf)`.
+`qpos[7:]` 以及每个动作向量中的关节顺序是 **FL、FR、RL、RR**，每条腿内部为 `(hip, thigh, calf)`。
 
-| Joint | Range (rad) | Torque limit (N·m) |
+| 关节 | 范围（rad） | 力矩限幅（N·m） |
 |---|---|---|
-| hip (all four) | $[-1.047, +1.047]$ | 23.7 |
-| thigh (front) | $[-1.571, +3.491]$ | 23.7 |
-| thigh (rear) | $[-0.524, +4.538]$ | 23.7 |
-| calf (all four) | $[-2.723, -0.838]$ | 45.4 |
+| 髋（全部四个） | $[-1.047, +1.047]$ | 23.7 |
+| 大腿（前腿） | $[-1.571, +3.491]$ | 23.7 |
+| 大腿（后腿） | $[-0.524, +4.538]$ | 23.7 |
+| 小腿（全部四个） | $[-2.723, -0.838]$ | 45.4 |
 
-Two things to notice.
+有两点值得注意。
 
-**The knee is stronger.** 45.4 N·m against 23.7 for the others, because the knee
-carries the robot's weight through the largest moment arm.
+**膝关节更强。** 45.4 N·m，其他关节为 23.7，因为膝关节要通过最大的力臂承载机器人的重量。
 
-**The calf range does not contain zero.** $[-2.723, -0.838]$ — the knee is
-*always* bent. There is no configuration of this robot with a straight rear
-leg segment. Remember this; it is about to matter a great deal.
+**小腿的范围不包含零。** $[-2.723, -0.838]$——膝关节*始终*是弯曲的。这台机器人不存在任何让腿的末段（小腿段）伸直的构型。记住这一点；它马上就会变得极其重要。
 
-## 8.2 MuJoCo state layout
+## 8.2 MuJoCo 状态布局
 
-`nq = 19`, `nv = 18`. The asymmetry is quaternions: orientation needs four
-numbers to represent but has only three degrees of freedom.
+`nq = 19`，`nv = 18`。两者不对称的原因在于四元数：表示姿态需要四个数，但姿态只有三个自由度。
 
 ```
 qpos[0:3]   base position (world frame), metres
@@ -63,33 +51,28 @@ qvel[3:6]   base angular velocity
 qvel[6:18]  twelve joint velocities
 ```
 
-`qvel[0:3]` is world-frame. That single fact is bug B2: v1 fed it straight into
-both the reward and the observation as though it were the robot's forward
-velocity. It is not — it is the velocity in the fixed world frame, which stops
-corresponding to "forward" the instant the robot yaws.
+`qvel[0:3]` 是世界坐标系下的量。仅这一个事实就构成了 bug B2：v1 把它直接同时送进了奖励和观测，仿佛它就是机器人的前进速度。它不是——它是在固定的世界坐标系下的速度，机器人一旦发生偏航，它就不再对应“前方”了。
 
-The conversion is one line:
+转换只需一行：
 
 $$
 v_b = R(q)^{\top} v_w
 $$
 
-implemented as `quat_rotate_inverse` in `envs/go2_env.py`, using the identity
+在 `envs/go2_env.py` 中实现为 `quat_rotate_inverse`，利用的恒等式是
 
 $$
 q^{*} v q = v - 2w (u \times v) + 2 u \times (u \times v), \qquad u = (q_x, q_y, q_z)
 \tag{8.1}
 $$
 
-v1 had this function, correctly implemented, and used it only for gravity.
+v1 其实有这个函数，实现也正确，却只把它用在了重力上。
 
-## 8.3 The `home` keyframe, and the bug that defined v1
+## 8.3 `home` 关键帧，以及定义了 v1 的那个 bug
 
-MuJoCo's `mj_resetData` sets `qpos = model.qpos0`. For this model, `qpos0` is
-whatever the MJCF's body positions and joint defaults imply — here, **all twelve
-joints at exactly 0 rad**, with the trunk at $z = 0.445$ m.
+MuJoCo 的 `mj_resetData` 会设置 `qpos = model.qpos0`。对这个模型而言，`qpos0` 就是 MJCF 中各个 body 的位置和关节默认值所隐含的构型——在这里，就是**十二个关节全部精确地处于 0 rad**，躯干位于 $z = 0.445$ m。
 
-The model also defines a keyframe:
+模型还定义了一个关键帧：
 
 ```xml
 <keyframe>
@@ -99,9 +82,9 @@ The model also defines a keyframe:
 </keyframe>
 ```
 
-That is the standing pose: hip 0, thigh $+0.9$, calf $-1.8$, trunk 27 cm up.
+这才是站立姿态：髋 0，大腿 $+0.9$，小腿 $-1.8$，躯干离地 27 cm。
 
-v1 did this:
+v1 是这样做的：
 
 ```python
 mujoco.mj_resetData(self.model, self.data)
@@ -109,32 +92,24 @@ mujoco.mj_forward(self.model, self.data)
 self.default_joint_pos = self.data.qpos[7:].copy()   # <- all zeros
 ```
 
-and then, every control step:
+然后在每个控制步：
 
 ```python
 target_pos = self.default_joint_pos + action * self.action_scale   # 0 + a*0.5
 ```
 
-So the PD controller's target was $0 \pm 0.5$ rad on every joint. Compare
-against the calf's legal range:
+于是 PD 控制器在每个关节上的目标都是 $0 \pm 0.5$ rad。把它和小腿的合法范围对比一下：
 
 ```
 reachable calf target:  [-0.5, +0.5]
 calf joint limit:       [-2.723, -0.838]
 ```
 
-**These sets do not intersect.** Not "the pose was suboptimal", not "the policy
-had to work harder" — for every action the policy could possibly emit, the
-commanded knee angle was outside the knee's physical travel, by at least 0.34
-rad and at most 1.3.
+**这两个集合没有交集。** 不是“姿态不够理想”，也不是“策略得更努力一些”——对于策略可能输出的每一个动作，指令的膝关节角度都在膝关节的物理行程之外，最少偏出 0.34 rad，最多偏出 1.3。
 
-It gets worse. `qpos0` itself has the calf joints at 0, which is *also* outside
-$[-2.723, -0.838]$. So v1 reset every single episode into a configuration that
-violated the robot's own joint limits, and MuJoCo's limit constraints
-immediately began shoving them back while the PD controller pulled the other
-way. Every episode began with the actuators fighting the endstops.
+还有更糟的。`qpos0` 本身的小腿关节就处于 0，这*同样*在 $[-2.723, -0.838]$ 之外。所以 v1 的每一个回合都被重置到一个违反机器人自身关节限位的构型中，MuJoCo 的限位约束立刻开始把关节往回推，而 PD 控制器却往另一个方向拉。每个回合一开始，执行器就在和限位挡块较劲。
 
-The check is three lines and is now `scripts/check_env.py`'s first section:
+检查只需三行，现在它是 `scripts/check_env.py` 的第一部分：
 
 ```
 default_joint_pos : [0.0, 0.9, -1.8, 0.0, 0.9, -1.8, 0.0, 0.9, -1.8, 0.0, 0.9, -1.8]
@@ -142,76 +117,59 @@ nominal height    : 0.270 m
 matches Go2 home  : YES
 ```
 
-The fix is one line:
+修复只需一行：
 
 ```python
 self._home_key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, "home")
 self.default_joint_pos = self.model.key_qpos[self._home_key_id, 7:].copy()
 ```
 
-The lesson generalises past this repository: **when you load a robot model, print
-the nominal pose and check it against the joint limits before you do anything
-else.** Nothing errors when you get this wrong. The simulation runs, the
-training curve goes up, papers get written.
+这个教训不止适用于本仓库：**加载一个机器人模型时，在做任何其他事情之前，先打印出名义姿态，并对照关节限位检查它。** 这里出错时，什么报错都不会有。仿真照常运行，训练曲线照样上升，论文照样发表。
 
-## 8.4 Actuators: torque, not position
+## 8.4 执行器：力矩，而非位置
 
-Menagerie's Go2 uses `motor` actuators:
+Menagerie 中的 Go2 使用 `motor` 执行器：
 
 ```xml
 <motor class="abduction" name="FL_hip" joint="FL_hip_joint"/>
 ```
 
-with `ctrlrange` in newton-metres. So `data.ctrl` is **torque**, and writing a
-torque there is correct — a point worth stating because it is the kind of thing
-that looks like a bug and is not. v1 got this right.
+其 `ctrlrange` 以牛·米为单位。所以 `data.ctrl` 是**力矩**，往里写力矩是正确的——这一点值得明说，因为它属于那种看起来像 bug、其实不是的情况。v1 在这一点上做对了。
 
-Some other MJCF models use `position` actuators, where `data.ctrl` is a target
-angle in radians and MuJoCo runs its own internal servo. Writing a torque into
-one of those produces a robot that behaves bizarrely with no error message.
-Always check which kind your model has.
+另一些 MJCF 模型使用 `position` 执行器，此时 `data.ctrl` 是以弧度为单位的目标角度，由 MuJoCo 运行自己内部的伺服控制。往这类执行器里写力矩，会得到一个行为怪异却没有任何错误信息的机器人。一定要检查你的模型用的是哪一种。
 
-## 8.5 PD control
+## 8.5 PD 控制
 
-The policy outputs **position targets**, not torques:
+策略输出的是**位置目标**，而不是力矩：
 
 $$
 q^*_t = q_\text{nom} + \alpha a_t, \qquad \alpha = 0.40\ \text{rad}
 $$
 
-and a joint-space PD law converts them:
+再由一个关节空间的 PD 控制律把它们转换为力矩：
 
 $$
 \tau = k_p (q^* - q) - k_d \dot q
 \tag{8.2}
 $$
 
-clipped to the actuator limits.
+并按执行器限幅进行裁剪。
 
-### Why not have the policy output torque directly?
+### 为什么不让策略直接输出力矩？
 
-Three reasons, in increasing order of importance.
+有三个理由，按重要性从低到高排列。
 
-**It matches the hardware.** A real Go2's low-level controller takes position
-targets with gains. A torque policy would have to be re-derived for deployment.
+**它与硬件相匹配。** 真实 Go2 的底层控制器接收的是带增益的位置目标。力矩策略在部署时得重新推导一遍。
 
-**It is a better-conditioned action space.** A position target is a *setpoint*;
-the PD law handles the fast, stiff dynamics of tracking it. The policy operates
-on the slow, task-relevant timescale. A torque policy has to learn the stiff
-part too, from scratch, at 50 Hz.
+**它是一个条件更好的动作空间。** 位置目标是一个*设定点*；跟踪它所涉及的快速、刚性的动力学由 PD 控制律来处理。策略则在缓慢的、与任务相关的时间尺度上工作。力矩策略还得以 50 Hz 从零开始把刚性的那部分也学会。
 
-**It has built-in stability.** Equation 8.2 with positive gains is a passive
-spring-damper: even a badly wrong target produces a bounded, dissipative force.
-A badly wrong torque produces whatever it produces. This makes early training
-survivable.
+**它具有内在的稳定性。** 增益为正的式 8.2 是一个无源的弹簧–阻尼器：即使目标错得离谱，产生的也是有界的、耗散性的力。而错得离谱的力矩会产生什么，就是什么。这让早期训练得以“活下来”。
 
-### Gain selection, measured rather than guessed
+### 增益选择：靠测量，而不是靠猜
 
-At zero action the PD targets the nominal pose exactly, so how much the robot
-sags under its own weight is a direct measurement of whether the gains are
-sensible. Measured on this model (150 control steps, then average):
+动作为零时，PD 的目标恰好是名义姿态，所以机器人在自身重量下下沉多少，直接衡量了增益是否合理。在这个模型上的测量结果（150 个控制步，然后取平均）：
 
-| $k_p$ | $k_d$ | settled height | sag from 0.27 m | peak torque |
+| $k_p$ | $k_d$ | 稳定高度 | 相对 0.27 m 的下沉量 | 峰值力矩 |
 |---|---|---|---|---|
 | 20 | 0.5 | 0.196 m | 7.4 cm | 8.8 N·m |
 | 25 | 0.6 | 0.206 m | 6.4 cm | 10.4 N·m |
@@ -220,28 +178,15 @@ sensible. Measured on this model (150 control steps, then average):
 | 60 | 1.5 | 0.256 m | 1.4 cm | 7.1 N·m |
 | 80 | 2.0 | 0.261 m | 0.9 cm | 6.8 N·m |
 
-v2 uses $k_p = 55$, $k_d = 1.4$. Sag matters more than it first appears: it is
-subtracted directly from the foot clearance available during swing, because
-while two legs retract the other two carry the whole robot and sag further
-(bug B17). $k_p = 80$ scores better still on paper and was rejected — that
-stiff, the policy starts exploiting contact impulses no real actuator could
-produce.
+v2 使用 $k_p = 55$、$k_d = 1.4$。下沉量比乍看之下更重要：它会直接从摆动相可用的抬足高度中扣除，因为当两条腿收起时，另外两条腿要承载整台机器人，下沉得更多（bug B17）。$k_p = 80$ 在纸面上得分更高，但被否决了——刚度那么高时，策略会开始利用任何真实执行器都无法产生的接触冲量。
 
-Note that $k_p = 40$, $k_d = 1.0$ are **v1's values**, and they were never the
-problem. The gains were raised for the separate, separately-measured reason
-above. When a system underperforms there is a temptation to change everything;
-the discipline is to change only what the evidence implicates.
+注意，$k_p = 40$、$k_d = 1.0$ 是 **v1 的取值**，而它们从来都不是问题所在。增益之所以被提高，是出于上面那个单独的、经过单独测量的理由。当一个系统表现不佳时，人们总有把所有东西都改一遍的冲动；而该守住的纪律是，只改证据所指向的部分。
 
-The action scale interacts with the gains through the torque limit:
-$k_p \times \alpha = 55 \times 0.40 = 22$ N·m against a 23.7 N·m hip and thigh
-limit, so at $|a| = 1$ the PD offset alone very nearly saturates the actuator.
-That is what caps $\alpha$ at 0.40, and hence caps stride length and top speed
-(bug B20).
+动作尺度通过力矩限幅与增益相互关联：$k_p \times \alpha = 55 \times 0.40 = 22$ N·m，而髋和大腿的限幅是 23.7 N·m，所以在 $|a| = 1$ 时，仅 PD 偏置本身就几乎让执行器饱和了。这就是 $\alpha$ 被限制在 0.40 的原因，进而也限制了步幅和最高速度（bug B20）。
 
-### The bug that *was* in the PD controller
+### PD 控制器里*确实*存在的那个 bug
 
-v1 computed the torque once per control step and then ran the physics forward
-with it frozen:
+v1 在每个控制步只计算一次力矩，然后保持它不变地推进物理仿真：
 
 ```python
 torques = self.kp * (target_pos - current_pos) - self.kd * current_vel
@@ -250,13 +195,9 @@ for _ in range(self.frame_skip):        # 20 steps = 40 ms
     mujoco.mj_step(self.model, self.data)
 ```
 
-For 40 milliseconds, $\tau$ is a constant. The $-k_d \dot q$ term — the entire
-damping mechanism — is evaluated once and then held, which means it is
-computed from a velocity that is up to 40 ms stale. During a foot strike, when
-joint velocities change sign in a few milliseconds, the "damping" term can be
-actively *driving* the oscillation it exists to suppress.
+在 40 毫秒内，$\tau$ 是一个常数。$-k_d \dot q$ 这一项——整个阻尼机制——只被计算一次然后保持不变，这意味着它所依据的速度可能已经过时了长达 40 ms。在足端触地的瞬间，关节速度会在几毫秒内改变符号，此时这个“阻尼”项反而可能在主动*驱动*它本应抑制的振荡。
 
-v2 recomputes inside the loop:
+v2 在循环内部重新计算：
 
 ```python
 for _ in range(self.decimation):
@@ -266,44 +207,31 @@ for _ in range(self.decimation):
     mujoco.mj_step(self.model, self.data)
 ```
 
-This is what real hardware does: the low-level PD loop runs at 500–1000 Hz while
-the policy runs at 50. Simulating it any other way simulates a controller nobody
-deploys.
+这正是真实硬件的做法：底层 PD 回路以 500–1000 Hz 运行，而策略以 50 Hz 运行。用任何其他方式来仿真，仿真的都是一个没有人会部署的控制器。
 
-## 8.6 Timing
+## 8.6 时序
 
 | | v1 | v2 |
 |---|---|---|
-| physics timestep | 2 ms | 2 ms |
-| decimation | 20 | 10 |
-| control rate | 25 Hz | 50 Hz |
-| PD evaluations per control step | 1 | 10 |
-| PD rate | 25 Hz | 500 Hz |
-| episode length | 1000 steps = 40 s | 1000 steps = 20 s |
+| 物理时间步长 | 2 ms | 2 ms |
+| decimation（控制降采样） | 20 | 10 |
+| 控制频率 | 25 Hz | 50 Hz |
+| 每个控制步的 PD 计算次数 | 1 | 10 |
+| PD 频率 | 25 Hz | 500 Hz |
+| 回合长度 | 1000 步 = 40 s | 1000 步 = 20 s |
 
-50 Hz is the field standard for legged RL. The reason is the stride: a trot at
-2 Hz gives 25 control steps per stride at 50 Hz, and only 12 at 25 Hz. Twelve
-decision points is not many for placing four feet.
+50 Hz 是足式机器人强化学习领域的标准。原因在于步态周期：2 Hz 的小跑（trot）在 50 Hz 下每个步态周期有 25 个控制步，而在 25 Hz 下只有 12 个。要安排四只脚的落足，十二个决策点并不算多。
 
-There is a consequence that is easy to miss: **changing the control rate changes
-the meaning of $\gamma$.** At $\gamma = 0.99$, the effective horizon is
-$1/(1-\gamma) = 100$ steps — 4 seconds at 25 Hz, 2 seconds at 50 Hz. Doubling
-the control rate halved the planning horizon. Two seconds is the right number
-for locomotion, so this was a happy consequence rather than a problem, but it
-was a consequence that had to be checked rather than assumed.
+有一个很容易被忽略的后果：**改变控制频率会改变 $\gamma$ 的含义。** 在 $\gamma = 0.99$ 时，有效视界是 $1/(1-\gamma) = 100$ 步——在 25 Hz 下是 4 秒，在 50 Hz 下是 2 秒。控制频率翻倍，规划视界就减半了。两秒对运动控制来说正是合适的数值，所以这是一个令人高兴的后果而不是问题，但它是一个必须加以核实、而不能想当然的后果。
 
-## 8.7 Contacts
+## 8.7 接触
 
-MuJoCo generates contacts each step in `data.contact`. To know whether a foot is
-loaded you must ask two questions, and v1 asked neither:
+MuJoCo 每一步都会在 `data.contact` 中生成接触。要知道一只脚是否承载了负荷，你必须问两个问题，而 v1 一个都没问：
 
-1. **Is the other geom the floor?** v1 counted any contact involving a foot
-   geom, which includes foot-on-shin and foot-on-foot self-contact.
-2. **Does the contact carry load?** v1 used the *existence* of a contact pair.
-   A foot grazing the ground and a foot bearing a quarter of the robot's weight
-   scored identically.
+1. **另一个 geom 是地面吗？** v1 统计了任何涉及足端 geom 的接触，其中包括脚碰小腿、脚碰脚这类自接触。
+2. **这个接触承载负荷吗？** v1 用的是接触对是否*存在*。一只轻擦地面的脚和一只承载着机器人四分之一重量的脚，得分完全相同。
 
-v2 asks both:
+v2 两个问题都问了：
 
 ```python
 if g1 == self.floor_geom_id:   other = g2
@@ -313,42 +241,33 @@ mujoco.mj_contactForce(self.model, self.data, i, force)
 if abs(force[0]) < force_threshold:  continue
 ```
 
-`mj_contactForce` returns a 6-vector in the contact frame; `force[0]` is the
-normal component. The threshold is 1 N against a 149 N robot.
+`mj_contactForce` 返回接触坐标系下的一个 6 维向量；`force[0]` 是法向分量。阈值为 1 N，而机器人重 149 N。
 
-v1 also had a fallback if the foot geoms could not be found by name:
+v1 还有一个兜底逻辑，用于按名称找不到足端 geom 的情况：
 
 ```python
 if len(self.foot_geom_ids) != 4:
     self.foot_geom_ids = list(range(self.model.ngeom - 4, self.model.ngeom))
 ```
 
-"the last four geoms" is not a foot detector. If it had ever triggered, the gait
-reward would have silently rewarded contacts on arbitrary bodies. v2 raises
-instead: a misconfiguration should stop the program, not quietly change what is
-being optimised.
+“最后四个 geom”可不是足端检测器。如果它真的被触发过，步态奖励就会悄无声息地去奖励任意部件上的接触。v2 改为直接抛出异常：配置错误应该让程序停下来，而不是悄悄改变正在被优化的东西。
 
-Friction on the floor is `[1.0, 0.005, 0.0001]` — sliding, torsional, rolling.
-Only the first matters much here, and it is randomised in $[0.4, 1.4]$ during
-training (chapter 12).
+地面的摩擦是 `[1.0, 0.005, 0.0001]`——分别是滑动、扭转、滚动摩擦。这里只有第一个比较重要，它在训练期间会在 $[0.4, 1.4]$ 范围内随机化（第 12 章）。
 
-## 8.8 The full control loop
+## 8.8 完整的控制回路
 
 ```
 policy(obs)             ->  a in [-1,1]^12          50 Hz
-q* = q_nom + 0.25 a                                 50 Hz
+q* = q_nom + 0.40 a                                 50 Hz
     repeat 10x:
-        tau = 40 (q* - q) - 1.0 qdot               500 Hz
+        tau = 55 (q* - q) - 1.4 qdot               500 Hz
         clip tau to +/-23.7 (hip, thigh), +/-45.4 (calf)
         mj_step                                     500 Hz
 observe, reward, terminate                          50 Hz
 ```
 
-Four numbers to keep in mind: 50 Hz policy, 500 Hz PD and physics, 0.25 rad of
-action authority, and a nominal pose of $(0, 0.9, -1.8)$ per leg. Everything in
-the next three chapters is built on top of them.
+要记住四个数：50 Hz 的策略，500 Hz 的 PD 和物理仿真，0.40 rad 的动作权限，以及每条腿 $(0, 0.9, -1.8)$ 的名义姿态。接下来三章的所有内容都建立在它们之上。
 
 ---
 
-**Previous:** [7. Why PPO and not SAC or TD3](07-why-not-sac-td3.md) ·
-**Next:** [9. Observations and actions](09-observations-and-actions.md)
+**上一章：** [7. 为什么选 PPO 而不是 SAC 或 TD3](07-why-not-sac-td3.md) · **下一章：** [9. 观测与动作](09-observations-and-actions.md)

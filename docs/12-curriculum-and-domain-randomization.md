@@ -1,22 +1,14 @@
-# 12. Curriculum and domain randomisation
+# 12. 课程学习与域随机化
 
-Two mechanisms that both change the distribution of episodes the policy sees,
-for opposite reasons. A curriculum narrows the task so it can be learned at all;
-domain randomisation widens the world so what is learned generalises.
+这两种机制都会改变策略所见回合的分布，但出发点恰好相反。课程学习收窄任务，使它能够被学会；域随机化拓宽世界，使学到的东西能够泛化。
 
-## 12.1 Why a curriculum
+## 12.1 为什么需要课程学习
 
-Sample the full command envelope from step one — $v_x$ up to 1.5 m/s, $v_y$ to
-0.7, yaw to 1.5 rad/s — and an untrained policy falls over in under a second on
-almost every episode. Nearly all of the data is about falling, the tracking
-reward is saturated at its floor for every command (chapter 10, §10.3: the
-exponential's gradient at $e = 1.5$ is $\approx 4\times10^{-5}$), and there is
-no signal distinguishing a slightly better fall from a slightly worse one.
+如果从第一步起就在完整的指令范围上采样——$v_x$ 最高 1.5 m/s，$v_y$ 最高 0.7，偏航最高 1.5 rad/s——一个未经训练的策略几乎在每个回合里都会在不到一秒内摔倒。几乎所有数据都是关于摔倒的，跟踪奖励对每条指令都饱和在其下限（第 10 章 §10.3：指数函数在 $e = 1.5$ 处的梯度为 $\approx 4\times10^{-5}$），没有任何信号能区分稍好一点的摔倒和稍差一点的摔倒。
 
-Start with commands the policy can nearly satisfy and the tracking reward is in
-its informative region, where the gradient is largest.
+从策略几乎能满足的指令开始，跟踪奖励就处在其信息丰富的区域，那里的梯度最大。
 
-## 12.2 Why v1's curriculum did not work
+## 12.2 为什么 v1 的课程学习不起作用
 
 ```python
 def _on_step(self):
@@ -27,41 +19,26 @@ def _on_step(self):
                                      indices=[env_idx])
 ```
 
-Three separate problems, one of them not about curricula at all.
+三个独立的问题，其中一个根本与课程学习无关。
 
-**It was open loop.** The ramp is a function of wall-clock timesteps and nothing
-else. If the policy was struggling, the curriculum widened anyway. If it was
-ahead of schedule, it was held back. A curriculum that does not measure the
-student is a timer.
+**它是开环的。** 这条爬坡曲线只取决于累计的时间步数，别无其他。如果策略学得吃力，课程照样放宽；如果它超前于进度，又会被拖住。不考察学生的课程，只是一个计时器。
 
-**A scalar cannot describe a 3-D command space.** It ramped forward speed only.
-$v_y$ and $\omega_z$ were fixed at zero for the entire run, which is a large part
-of why v1 could only walk forwards — the *curriculum itself* guaranteed the
-policy never saw a lateral or turning command.
+**一个标量无法描述三维指令空间。** 它只对前进速度做了爬坡。$v_y$ 和 $\omega_z$ 在整个训练运行中都固定为零，这在很大程度上就是 v1 只会向前走的原因——*课程本身*保证了策略从未见过横向或转向指令。
 
-**It performed 8 blocking IPC round trips per environment step.** This is the
-one that is not a curriculum bug but cost the most. Under `SubprocVecEnv`, each
-`env_method` call with `indices=[i]` pickles the arguments, writes to a pipe,
-and **blocks** waiting for the worker's acknowledgement. The loop did that once
-per environment, on every single step, to send a value that had not changed
-since the previous step. At 8 environments and 25 Hz that is 200 blocking round
-trips per simulated second, per environment — pure overhead against a physics
-step that costs about 1 ms.
+**它每个环境步执行 8 次阻塞式 IPC 往返。** 这一条不是课程学习的 bug，代价却最大。在 `SubprocVecEnv` 下，每次带 `indices=[i]` 的 `env_method` 调用都要把参数 pickle 序列化、写入管道，然后**阻塞**等待 worker 的确认。这个循环对每个环境都这样做一次，而且每一步都如此，只为发送一个自上一步以来根本没变过的值。在 8 个环境、25 Hz 下，这相当于每个环境每模拟一秒就有 200 次阻塞往返——相对于一次只需约 1 ms 的物理步进，这纯属开销。
 
-## 12.3 The v2 curriculum
+## 12.3 v2 的课程学习
 
-Closed loop, over the ranges rather than a scalar, and touching the workers at
-most once per rollout.
+闭环；作用于各个范围，而不是单个标量；每个 rollout 最多触碰 worker 一次。
 
-**The signal.** Each environment reports a normalised tracking score in $[0,1]$
-in its info dict:
+**信号。** 每个环境在它的 info 字典中报告一个取值在 $[0,1]$ 内的归一化跟踪分数：
 
 $$
 \text{score} = \tfrac12 \exp\left(-\frac{e_\text{lin}^2}{\sigma_v}\right) + \tfrac12 \exp\left(-\frac{e_\text{ang}^2}{\sigma_\omega}\right)
 \tag{12.1}
 $$
 
-**The controller.** A scalar level $\ell \in [0,1]$, updated once per rollout:
+**控制器。** 一个标量等级 $\ell \in [0,1]$，每个 rollout 更新一次：
 
 $$
 \ell \leftarrow
@@ -73,17 +50,15 @@ $$
 \tag{12.2}
 $$
 
-with $\Delta = 0.05$. The dead band between 0.55 and 0.85 stops the level
-oscillating on rollout-to-rollout noise.
+其中 $\Delta = 0.05$。0.55 与 0.85 之间的死区防止等级随 rollout 之间的噪声来回振荡。
 
-**The ranges.** $\ell$ linearly interpolates every range from `initial` to
-`final`:
+**范围。** $\ell$ 把每个范围从 `initial` 线性插值到 `final`：
 
 $$
 [\text{lo}, \text{hi}]_\ell = (1-\ell)[\text{lo}, \text{hi}]_\text{init} + \ell[\text{lo}, \text{hi}]_\text{final}
 $$
 
-| | initial ($\ell=0$) | final ($\ell=1$) |
+| | 初始（$\ell=0$） | 最终（$\ell=1$） |
 |---|---|---|
 | $v_x$ (m/s) | $[-0.5, 1.0]$ | $[-1.0, 1.5]$ |
 | $v_y$ (m/s) | $[-0.3, 0.3]$ | $[-0.7, 0.7]$ |
@@ -91,8 +66,7 @@ $$
 | $f$ (Hz) | $[1.8, 2.2]$ | $[1.5, 3.0]$ |
 | $h^*$ (m) | $[0.29, 0.31]$ | $[0.27, 0.34]$ |
 
-**The IPC.** In-process accumulation on every step; a single broadcast
-`env_method` call at rollout end, and only when the level actually changed:
+**IPC。** 每一步都在进程内累积；只在 rollout 结束时做一次广播式的 `env_method` 调用，而且仅当等级确实发生变化时才调用：
 
 ```python
 def _on_step(self):
@@ -108,99 +82,68 @@ def _push_ranges(self, force=False):
     self.training_env.env_method("set_command_ranges", self.curriculum.ranges)
 ```
 
-One call per 8192 steps instead of eight calls per step: a factor of roughly
-65,000 fewer round trips.
+每 8192 步一次调用，而不是每步八次调用：往返次数减少了大约 65,000 倍。
 
-## 12.4 Setting the thresholds, and the trap in them
+## 12.4 设置阈值，以及其中的陷阱
 
-The promotion threshold cannot be picked by taste. It has to be compared against
-what a **do-nothing policy** scores under the same command ranges, because a
-threshold below that number promotes a robot that has learned nothing.
+晋级阈值不能凭感觉挑。它必须与一个**什么都不做的策略**在相同指令范围下的得分作比较，因为低于这个数的阈值会让一台什么都没学会的机器人晋级。
 
-Monte-Carlo over the command sampler, with the robot's achieved velocity set to
-zero:
+在指令采样器上做蒙特卡洛估计，并把机器人实际达到的速度设为零：
 
-| initial ranges | $\sigma_v$ | do-nothing tracking score |
+| 初始范围 | $\sigma_v$ | 什么都不做时的跟踪分数 |
 |---|---|---|
 | $[-0.3, 0.6],[-0.2,0.2],[-0.4,0.4]$ | 0.25 | **0.79** |
 | $[-0.5, 1.0],[-0.3,0.3],[-0.6,0.6]$ | 0.25 | 0.62 |
 | $[-0.5, 1.0],[-0.3,0.3],[-0.6,0.6]$ | 0.20 | **0.57** |
 | $[-1.0, 1.5],[-0.7,0.7],[-1.5,1.5]$ | 0.20 | 0.30 |
 
-The first row is what this repository originally shipped, against a promotion
-threshold of 0.85. A stationary robot scored 0.79 — within 0.06 of promotion,
-having never taken a step. And with a decay threshold of 0.65, standing was
-*above* the demotion line too, so the curriculum considered a statue to be
-making acceptable progress.
+第一行是本仓库最初发布的配置，对应的晋级阈值为 0.85。一台静止的机器人能得 0.79——距晋级只差 0.06，却从未迈出过一步。而且降级阈值是 0.65，站着不动也*高于*降级线，于是课程认为一尊雕像正在取得可以接受的进展。
 
-The fix was to make the starting task **harder**, not easier: widen the initial
-ranges and sharpen the kernel until the do-nothing baseline is 0.57, leaving
-real headroom to 0.85. This is the counter-intuitive part of curriculum design
-and worth stating as a rule:
+解决办法是让起始任务变得**更难**，而不是更容易：拓宽初始范围、锐化核函数，直到什么都不做的基线降到 0.57，给 0.85 留出真正的余量。这是课程设计中反直觉的部分，值得作为一条规则写下来：
 
-> A curriculum's job is to make the task **learnable**, not easy. If the trivial
-> policy nearly satisfies the starting task, there is no gradient out of it, and
-> the curriculum has created the local optimum it was supposed to avoid.
+> 课程的任务是让任务变得**可学习**，而不是变得容易。如果平凡策略几乎就能满足起始任务，那就没有梯度能把策略带出这个状态，课程反而制造出了它本该避免的局部最优。
 
-Chapter 10, §10.4 has the full incident.
+第 10 章 §10.4 有这次事故的完整经过。
 
-## 12.5 Stand-still commands
+## 12.5 站立不动指令
 
-10% of sampled commands are an explicit zero, and any command whose magnitude
-falls below 0.15 is snapped to zero.
+10% 的采样指令是显式的零，任何幅值低于 0.15 的指令都会被吸附为零。
 
-Without this, "stop" is a measure-zero event in a continuous range and is
-effectively never sampled. The result is a robot that marches on the spot when
-told to stop — a policy that has learned "commanded speed maps to stepping rate"
-and has never been shown that zero is special.
+没有这一点，“停下”在连续范围中是一个测度为零的事件，实际上永远不会被采样到。结果就是机器人在被要求停下时原地踏步——这个策略学到的是“指令速度映射为踏步频率”，却从来没有人告诉过它零是特殊的。
 
-The snapping matters too. In the ambiguous band around zero the `gait_phase`
-term (using a stepping schedule) and the `stand_still` term (penalising
-deviation from nominal) pull in opposite directions. Snapping to a true stand
-switches the gait schedule to `stand`, so both terms agree.
+吸附同样重要。在零附近的模糊区带里，`gait_phase` 项（使用迈步时间表）和 `stand_still` 项（惩罚偏离标称姿态）朝相反方向拉扯。吸附到真正的站立会把步态时间表切换为 `stand`，于是两项意见一致。
 
-## 12.6 Mid-episode resampling
+## 12.6 回合中途重新采样
 
-Commands are resampled every 5 seconds within an episode, not just at reset.
+指令在回合内每 5 秒重新采样一次，而不只是在重置时采样。
 
-Two reasons. First, a policy can infer a constant command from its own early
-motion and stop reading the observation — it becomes open loop with a
-20-second memory. Second, the transitions themselves need training: what the
-robot does in the half-second after the command changes is exactly what you feel
-when driving it with `scripts/play.py`, and it is not trained by a policy that
-only ever sees step changes at reset.
+原因有二。第一，策略可以从自己早期的运动中推断出恒定的指令，然后不再读取观测——它变成了一个带 20 秒记忆的开环控制器。第二，指令切换本身也需要训练：指令改变后的半秒内机器人做了什么，正是你用 `scripts/play.py` 操控它时最能直接感受到的东西，而一个只在重置时见过指令阶跃变化的策略，从来没有在这方面受过训练。
 
-## 12.7 Domain randomisation
+## 12.7 域随机化
 
-The opposite operation. The curriculum narrows what is asked; randomisation
-widens the world it is asked in.
+这是相反的操作。课程收窄提出的要求；随机化则拓宽提出要求时所处的世界。
 
-The formal justification is chapter 1's POMDP caveat. Friction, payload and
-actuator gains are hidden state. A policy trained at one value learns a control
-law tuned to it. Randomise across episodes and the policy must find a law that
-works for the whole distribution — which is a robust law, and one that has a
-chance of working on a system whose true value is outside the training range.
+形式上的依据是第 1 章关于 POMDP 的说明。摩擦、负载和执行器增益都是隐藏状态。在单一取值下训练的策略会学到一条为该取值调好的控制律。在回合之间进行随机化，策略就必须找到一条对整个分布都有效的控制律——这是一条鲁棒的控制律，并且在真实取值落在训练范围之外的系统上也有机会奏效。
 
-What is randomised, per episode:
+每个回合随机化的内容：
 
-| Quantity | Range | Standing in for |
+| 量 | 范围 | 对应的现实因素 |
 |---|---|---|
-| ground and foot friction | $\times[0.4, 1.4]$ | surface, wear, dust |
-| trunk mass | $+[-1.0, +2.0]$ kg | battery, sensors, payload |
-| $k_p$ | $\times[0.8, 1.2]$ | motor constant, driver |
-| $k_d$ | $\times[0.8, 1.2]$ | friction, unmodelled damping |
-| initial joint angles | $\pm 0.1$ rad | — |
-| initial height | $[-0.02, +0.05]$ m | — |
-| initial roll/pitch | $\pm 0.05$ rad | — |
-| initial yaw | $[-\pi, \pi)$ | heading invariance |
-| initial base velocity | $\pm 0.3$ m/s, $\pm 0.3$ rad/s | — |
-| initial joint velocity | $\pm 0.5$ rad/s | — |
-| initial gait phase | $[0, 1)$ | — |
+| 地面与足端摩擦 | $\times[0.4, 1.4]$ | 表面、磨损、灰尘 |
+| 躯干质量 | $+[-1.0, +2.0]$ kg | 电池、传感器、负载 |
+| $k_p$ | $\times[0.8, 1.2]$ | 电机常数、驱动器 |
+| $k_d$ | $\times[0.8, 1.2]$ | 摩擦、未建模的阻尼 |
+| 初始关节角度 | $\pm 0.1$ rad | — |
+| 初始高度 | $[-0.02, +0.05]$ m | — |
+| 初始横滚/俯仰 | $\pm 0.05$ rad | — |
+| 初始偏航 | $[-\pi, \pi)$ | 航向不变性 |
+| 初始机身速度 | $\pm 0.3$ m/s, $\pm 0.3$ rad/s | — |
+| 初始关节速度 | $\pm 0.5$ rad/s | — |
+| 初始步态相位 | $[0, 1)$ | — |
 
-Two implementation points that are easy to get wrong.
+有两个容易出错的实现要点。
 
-**Randomise from the model defaults, never from the current value.** Otherwise
-the randomisation compounds across episodes and drifts:
+**从模型默认值出发进行随机化，永远不要从当前值出发。** 否则随机化会在回合之间不断累积并发生漂移：
 
 ```python
 self.model.body_mass[:] = self.default_body_mass          # restore first
@@ -208,26 +151,17 @@ self.model.body_mass[self.base_body_id] = (
     self.default_body_mass[self.base_body_id] + self.np_random.uniform(-1.0, 2.0))
 ```
 
-**Reset the gains even when randomisation is off**, so that
-`randomize_dynamics: false` really means nominal dynamics rather than "whatever
-the last randomised episode left behind".
+**即使关闭了随机化也要重置增益**，这样 `randomize_dynamics: false` 才真正意味着标称动力学，而不是“上一个随机化回合遗留下来的随便什么值”。
 
-### Initial-state randomisation is the underrated one
+### 初始状态随机化是被低估的那一个
 
-v1 reset to a single state and perturbed joint angles by $\pm 0.05$ rad. A
-policy trained that way has never seen the states it visits after a stumble, so
-it cannot recover from one. Randomising the whole initial condition — height,
-attitude, both velocities, phase — is cheap and is most of what "push recovery"
-actually is.
+v1 总是重置到同一个状态，只把关节角度扰动 $\pm 0.05$ rad。这样训练出来的策略从未见过绊了一下之后会进入的那些状态，因此无法从中恢复。对整个初始条件——高度、姿态、两种速度、相位——进行随机化成本很低，而这在很大程度上就是“推扰恢复”的实质。
 
-Random initial **yaw** deserves its own mention: it is the second line of
-defence against heading-correlated behaviour, complementing the choice of
-projected gravity over the quaternion (chapter 9, §9.2).
+随机的初始**偏航**值得单独一提：它是抵御与航向相关的行为的第二道防线，与选择投影重力而非四元数（第 9 章 §9.2）相辅相成。
 
-Random initial **phase** stops every episode starting on the same foot, which
-would let the policy key off the episode timer rather than the observed clock.
+随机的初始**相位**避免了每个回合都从同一只足开始，否则策略可能会依赖回合计时器，而不是观测到的时钟。
 
-## 12.8 Pushes
+## 12.8 外力推扰
 
 ```python
 f = self.np_random.uniform(-40, 40, size=3)
@@ -236,10 +170,9 @@ self.data.xfrc_applied[self.base_body_id, :3] = f
 self._push_remaining = 0.15        # seconds
 ```
 
-Every 3–7 seconds, a randomly-timed force of up to 40 N held for 0.15 s. Against
-a 15.2 kg robot that is $\approx 0.4$ m/s of velocity change — a solid shove.
+每隔 3–7 秒，在随机时刻施加一个最大 40 N、持续 0.15 s 的力。对于一台 15.2 kg 的机器人，这相当于 $\approx 0.4$ m/s 的速度变化——结结实实的一推。
 
-Contrast v1:
+对比 v1：
 
 ```python
 if self.step_count > 0 and self.step_count % 200 == 0:
@@ -247,49 +180,29 @@ if self.step_count > 0 and self.step_count % 200 == 0:
     self.data.qvel[0:3] += push
 ```
 
-Two problems. It fired on an **exactly periodic schedule** the policy could
-memorise — after enough episodes, "step 200" is a predictable event and the
-policy braces for it rather than learning general recovery. And it wrote
-directly into `qvel`, teleporting momentum: an instantaneous velocity change of
-up to 3 m/s with no force, no impulse through the contacts, and no
-correspondence to anything physical. A real push acts through the trunk over
-some duration and the legs feel it through the ground.
+两个问题。它按**严格周期的时间表**触发，策略可以把它记住——经过足够多的回合，“第 200 步”就成了一个可预测的事件，策略会为它提前绷紧，而不是学会通用的恢复能力。而且它直接写入 `qvel`，凭空瞬移动量：最高 3 m/s 的瞬时速度变化，没有力，没有经由接触传递的冲量，也不对应任何物理现实。真实的推力会在一段持续时间内作用于躯干，腿部则通过地面感受到它。
 
-Randomised timing means the policy cannot anticipate. A real force means the
-recovery it learns is a recovery from something that can actually happen.
+随机的时机意味着策略无法预判。真实的力意味着它学到的恢复，是从真正可能发生的事情中恢复。
 
-## 12.9 How much is too much
+## 12.9 多少才算太多
 
-Randomisation is not free. Every dimension you randomise increases the variance
-of the return, which increases the variance of the advantage estimates, which
-slows learning. Over-randomise and the policy converges to the most conservative
-behaviour that survives the worst case — a robot that walks slowly and stiffly
-because it is braced for a friction coefficient of 0.4 at all times.
+随机化不是免费的。你随机化的每一个维度都会增大回报的方差，进而增大优势估计的方差，进而拖慢学习。过度随机化会让策略收敛到能在最坏情况下存活的最保守行为——一台走得又慢又僵的机器人，因为它时刻都在为摩擦系数 0.4 的情况做准备。
 
-The heuristic: randomise a parameter if you do not know its true value to better
-than the width of the range. Friction is genuinely unknown to within a factor of
-two, so $\times[0.4, 1.4]$ is honest. Gravity is known to five significant
-figures, so randomising it is noise for its own sake.
+经验法则：如果你对某个参数真实值的了解精度不如该范围的宽度，就随机化它。摩擦的真实值确实只能确定到两倍以内，所以 $\times[0.4, 1.4]$ 是诚实的。重力已知到五位有效数字，随机化它只是为了噪声而噪声。
 
-Since sim-to-real is out of scope for this version, the ranges here are modest —
-enough to prevent brittleness, not enough to pay the full conservatism tax.
-Chapter 16 lists what would need widening for real transfer.
+由于仿真到现实（sim-to-real）不在本版本的范围之内，这里的范围比较温和——足以防止策略脆弱，但还不至于交满全部的保守税。第 16 章列出了真正迁移时需要拓宽哪些范围。
 
-## 12.10 What to watch
+## 12.10 需要关注什么
 
-| Trace | Healthy | Unhealthy |
+| 曲线 | 健康 | 不健康 |
 |---|---|---|
-| `curriculum/level` | climbs steadily, reaches 1.0, stays | pinned at 0 (nothing is learning); oscillating (dead band too narrow) |
-| `curriculum/tracking_score` | climbs past 0.85 | flat near the do-nothing baseline — check §12.4 |
-| `curriculum/max_vel_x` | follows the level | — |
-| `episode/mean_length` | rises toward the truncation limit | falling as the level rises: the curriculum is outrunning the policy |
+| `curriculum/level` | 稳步爬升，达到 1.0 并保持 | 卡在 0（什么都没学到）；来回振荡（死区太窄） |
+| `curriculum/tracking_score` | 爬升并越过 0.85 | 平坦地停在什么都不做的基线附近——检查 §12.4 |
+| `curriculum/max_vel_x` | 跟随等级变化 | — |
+| `episode/mean_length` | 朝截断上限上升 | 随等级上升而下降：课程跑在了策略前面 |
 
-The failure worth naming: level climbing while `episode/mean_length` falls. The
-curriculum is promoting on a tracking score achieved in the brief interval
-before the robot falls over. Lower the promotion threshold's dead band, or add
-episode length as a second promotion criterion.
+值得点名的失效模式：等级在爬升，而 `episode/mean_length` 在下降。课程依据的是机器人摔倒前那一小段时间内取得的跟踪分数在晋级。降低晋级阈值的死区，或者把回合长度作为第二条晋级标准。
 
 ---
 
-**Previous:** [11. Gaits, phase, and periodic control](11-gaits-and-phase.md) ·
-**Next:** [13. Reading a training run](13-training-diagnostics.md)
+**上一章：** [11. 步态、相位与周期控制](11-gaits-and-phase.md) · **下一章：** [13. 解读训练过程](13-training-diagnostics.md)

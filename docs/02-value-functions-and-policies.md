@@ -1,111 +1,85 @@
-# 2. Value functions and policies
+# 2. 价值函数与策略
 
-Chapter 1 ended with the objective:
+第 1 章以这个目标结尾：
 
 $$
 J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\left[\sum_{t=0}^{\infty} \gamma^t r_t \right]
 $$
 
-To improve it we need to answer a question the reward signal does not answer
-directly: *given where I am, how well am I doing?* Value functions are that
-answer, and the advantage function — the difference between "how well am I
-doing" and "how well would I do if I took this particular action" — is the
-quantity every algorithm in this book ultimately estimates.
+要改进它，我们需要回答一个奖励信号不会直接回答的问题：*就我现在所处的位置而言，我做得怎么样？* 价值函数就是这个答案；而优势函数——“我做得怎么样”与“如果我采取这个特定动作会做得怎么样”之间的差——则是本书中每个算法最终要估计的量。
 
-## 2.1 The state-value function
+## 2.1 状态价值函数
 
 $$
 V^\pi(s) = \mathbb{E}_{\tau \sim \pi}\left[ \sum_{k=0}^{\infty} \gamma^k r_{t+k} \quad \middle|\quad s_t = s \right]
 \tag{2.1}
 $$
 
-In words: start in $s$, follow $\pi$ forever, average the discounted return over
-all the randomness in the policy and the dynamics.
+用文字说：从 $s$ 出发，永远遵循 $\pi$，对策略和动力学中的所有随机性求折扣回报的平均。
 
-$V^\pi$ depends on $\pi$. This is not a technicality — it is the source of most
-confusion about value-based methods. Standing upright with legs folded is a
-great state if your policy knows how to push off from it, and a terrible one if
-your policy will fall over from it. The value of a state is a property of the
-state *and the behaviour*, jointly.
+$V^\pi$ 依赖于 $\pi$。这不是技术细节——它是关于基于价值的方法的大部分困惑的根源。腿部收拢、身体直立地站着，如果你的策略知道如何从这里蹬地起步，这就是个很好的状态；如果你的策略会从这里摔倒，这就是个很糟的状态。一个状态的价值是状态*和行为*共同的属性。
 
-For the Go2, in a policy that walks well, $V^\pi$ is roughly "expected reward
-per step $\times$ 100" — around $0.5 \times 100 = 50$ for a policy earning 0.5
-per step, less near states from which a fall is likely.
+对于 Go2，在一个走得好的策略下，$V^\pi$ 大致是“每步期望奖励 $\times$ 100”——对于每步获得 0.5 奖励的策略，约为 $0.5 \times 100 = 50$；在容易摔倒的状态附近则更低。
 
-## 2.2 The action-value function
+## 2.2 动作价值函数
 
 $$
 Q^\pi(s, a) = \mathbb{E}_{\tau \sim \pi}\left[ \sum_{k=0}^{\infty} \gamma^k r_{t+k} \quad \middle|\quad s_t = s, a_t = a \right]
 \tag{2.2}
 $$
 
-Same thing, except the first action is forced to be $a$ and only afterwards do
-we follow $\pi$. The two are related by averaging over the first action:
+同样的东西，只不过第一个动作被强制为 $a$，之后才遵循 $\pi$。二者通过对第一个动作求平均联系起来：
 
 $$
 V^\pi(s) = \mathbb{E}_{a \sim \pi(\cdot \mid s)}\left[ Q^\pi(s, a) \right]
 \tag{2.3}
 $$
 
-## 2.3 The advantage function
+## 2.3 优势函数
 
 $$
 A^\pi(s, a) = Q^\pi(s, a) - V^\pi(s)
 \tag{2.4}
 $$
 
-*How much better than average is this action, in this state, under this policy?*
+*在这个状态下、在这个策略之下，这个动作比平均水平好多少？*
 
-Equation 2.3 gives the property that makes the advantage useful:
+式 2.3 给出了让优势有用的那个性质：
 
 $$
 \mathbb{E}_{a \sim \pi(\cdot \mid s)}\left[ A^\pi(s, a) \right] = 0
 \tag{2.5}
 $$
 
-The advantage is zero-mean under the policy's own action distribution. Half the
-actions the policy takes are better than its average; half are worse.
+在策略自身的动作分布下，优势的均值为零。策略采取的动作中，有的比它的平均水平好，有的比它差，按概率加权后正好相互抵消。
 
-This is the single most important object in policy-gradient RL, for one reason:
-it is **centred and scale-free with respect to the state**. Consider two states,
-one where every action leads to a return around 50 and one where every action
-leads to a return around 5. The raw returns differ by an order of magnitude and
-tell you almost nothing about which action to take. The advantages in both
-states are centred on zero and tell you precisely that.
+这是策略梯度强化学习中最重要的单个对象，原因只有一个：它**相对于状态是中心化的、与尺度无关的**。考虑两个状态，一个状态下每个动作带来的回报都在 50 左右，另一个状态下都在 5 左右。原始回报相差一个数量级，却几乎没有告诉你该采取哪个动作。而两个状态下的优势都以零为中心，告诉你的恰恰就是这一点。
 
-Concretely for the Go2: suppose the robot is mid-stride with the front-left
-foot about to touch down. $V^\pi(s) \approx 48$. An action that plants the foot
-cleanly gives $Q \approx 48.4$; an action that plants it half a stride early
-gives $Q \approx 46.1$. The advantages are $+0.4$ and $-1.9$. Those are the
-numbers that should drive the gradient, and the fact that both raw $Q$ values
-are "about 48" is exactly the information we want to discard.
+具体到 Go2：假设机器人正处于步态周期中段，左前足即将着地。$V^\pi(s) \approx 48$。一个干净利落地落足的动作给出 $Q \approx 48.4$；一个提前半个步态周期落足的动作给出 $Q \approx 46.1$。对应的优势是 $+0.4$ 和 $-1.9$。驱动梯度的应该是这两个数，而两个原始 $Q$ 值都“大约是 48”这一事实，恰恰是我们想要丢弃的信息。
 
-## 2.4 The Bellman equations
+## 2.4 贝尔曼方程
 
-Value functions satisfy recursions, which is what lets us estimate them without
-simulating to infinity.
+价值函数满足递推关系，这让我们无需模拟到无穷远就能估计它们。
 
-Split off the first term of the sum in equation 2.1:
+把式 2.1 中求和的第一项单独拆出来：
 
 $$
 V^\pi(s) = \mathbb{E}_{a \sim \pi,\quad s' \sim P}\left[ r(s, a, s') + \gamma V^\pi(s') \right]
 \tag{2.6}
 $$
 
-and similarly
+类似地
 
 $$
 Q^\pi(s, a) = \mathbb{E}_{s' \sim P}\left[ r(s, a, s') + \gamma \mathbb{E}_{a' \sim \pi}\left[ Q^\pi(s', a') \right] \right]
 \tag{2.7}
 $$
 
-These are the **Bellman expectation equations**. Each says the same structural
-thing: the value of now equals the immediate reward plus the discounted value
-of next.
+这就是**贝尔曼期望方程**。它们在结构上说的是同一件事：现在的价值等于即时奖励加上下一步的折扣价值。
 
-### Derivation of 2.6
+### 式 2.6 的推导
 
-Starting from 2.1 and writing $G_t = r_t + \gamma G_{t+1}$:
+从 2.1 出发，并写出 $G_t = r_t + \gamma G_{t+1}$：
 
 $$
 \begin{aligned}
@@ -118,14 +92,11 @@ V^\pi(s)
 \end{aligned}
 $$
 
-The fourth line is the tower property of conditional expectation combined with
-the Markov assumption (Eq 1.1): once we condition on $s_{t+1}$, the earlier
-history is irrelevant to the future return. Every use of the Bellman equation
-is, underneath, a use of the Markov property.
+第四行用的是条件期望的塔性质，再结合马尔可夫假设（式 1.1）：一旦以 $s_{t+1}$ 为条件，更早的历史就与未来回报无关了。每一次使用贝尔曼方程，本质上都是在使用马尔可夫性质。
 
-### The optimality equations
+### 最优性方程
 
-For completeness, the optimal value functions satisfy
+为完整起见，最优价值函数满足
 
 $$
 V^*(s) = \max_a \quad \mathbb{E}_{s'}\left[ r + \gamma V^*(s') \right], \qquad
@@ -133,79 +104,46 @@ Q^*(s, a) = \mathbb{E}_{s'}\left[ r + \gamma \max_{a'} Q^*(s', a') \right]
 \tag{2.8}
 $$
 
-These are the basis of Q-learning and of DQN. Note the $\max_{a'}$: in a
-continuous 12-dimensional action space that maximisation is itself a nontrivial
-optimisation problem, solved at every single update. This is why value-based
-methods need extra machinery in continuous control (DDPG/TD3 train a separate
-actor network purely to approximate the argmax; SAC replaces the hard max with
-a soft one). Policy-gradient methods sidestep it entirely — see chapter 7.
+它们是 Q-learning 和 DQN 的基础。注意其中的 $\max_{a'}$：在连续的 12 维动作空间中，这个最大化本身就是一个不平凡的优化问题，而且每一次更新都要求解一次。这就是为什么基于价值的方法在连续控制中需要额外的机制（DDPG/TD3 专门训练一个独立的 actor 网络来近似 argmax；SAC 则把硬 max 换成了软 max）。策略梯度方法完全绕开了这个问题——见第 7 章。
 
-## 2.5 Why we estimate instead of solving
+## 2.5 为什么是估计而不是求解
 
-For a finite MDP with known $P$ and $R$, equation 2.6 is a linear system in
-$|\mathcal{S}|$ unknowns and you can just solve it.
+对于 $P$ 和 $R$ 已知的有限 MDP，式 2.6 是一个含 $|\mathcal{S}|$ 个未知数的线性方程组，直接解就行。
 
-For this robot:
+对于这台机器人：
 
-- $\mathcal{S}$ is continuous and roughly 50-dimensional. There is no table.
-- $P$ is MuJoCo. We can *sample* from it but we have no closed form and no
-  ability to enumerate successors.
-- Even sampling is expensive: one control step costs ten physics steps of a
-  contact-rich rigid-body solve.
+- $\mathcal{S}$ 是连续的，大约 50 维。根本没有表格可言。
+- $P$ 就是 MuJoCo。我们可以从中*采样*，但它没有闭式表达，我们也无法枚举后继状态。
+- 就连采样也很昂贵：一个控制步要花掉十个物理步，每一步都是一次富含接触的刚体求解。
 
-So we do the only thing available: **approximate $V^\pi$ with a neural network
-and fit it to sampled returns**. In this repository that network is the critic,
-a 512-256-128 MLP defined in `ppo_from_scratch/ppo.py` (`ActorCritic.critic`),
-trained by regression on GAE-derived targets (chapter 4).
+所以我们只能做唯一可做的事：**用神经网络近似 $V^\pi$，并把它拟合到采样得到的回报上**。在本仓库中，这个网络就是 critic，一个定义在 `ppo_from_scratch/ppo.py`（`ActorCritic.critic`）中的 512-256-128 MLP，通过对 GAE 导出的目标做回归来训练（第 4 章）。
 
-Two consequences follow, and both show up in practice:
+由此引出两个后果，二者在实践中都会显现：
 
-1. **The critic is always wrong.** It is a function approximator fitted to noisy
-   targets, chasing a moving target as $\pi$ changes. `explained_variance` in
-   the training logs measures how wrong; see chapter 13.
-2. **The critic's errors propagate into the policy gradient**, because the
-   gradient is weighted by advantages estimated *from* the critic. A bad critic
-   does not merely slow learning, it points the policy in wrong directions.
-   This is the main argument for GAE's $\lambda$ parameter, which lets you trade
-   off reliance on the critic against variance.
+1. **critic 永远是错的。** 它是一个拟合到带噪目标上的函数逼近器，而且随着 $\pi$ 的变化在追逐一个移动的目标。训练日志中的 `explained_variance` 衡量它错得有多离谱；见第 13 章。
+2. **critic 的误差会传播到策略梯度中**，因为梯度是用*基于* critic 估计出的优势来加权的。一个糟糕的 critic 不只是拖慢学习，它会把策略引向错误的方向。这是 GAE 的 $\lambda$ 参数存在的主要理由：它让你在对 critic 的依赖与方差之间进行权衡。
 
-## 2.6 Asymmetric actor–critic, and why it is not used here
+## 2.6 非对称 actor–critic，以及这里为什么不用它
 
-Worth knowing about, because it is the standard next step and the v1 README
-recommends it.
+值得了解，因为它是标准的下一步，而且 v1 的 README 推荐了它。
 
-Nothing requires the actor and the critic to see the same input. The actor's
-input is constrained by deployment: on a real robot it can only use what the
-sensors provide. The critic exists only during training and is thrown away
-afterwards, so it can be given **privileged information** — ground friction,
-the exact payload mass, the terrain height map, the applied push force.
+没有任何规定要求 actor 和 critic 看到相同的输入。actor 的输入受部署条件约束：在真实机器人上，它只能使用传感器提供的信息。critic 只在训练期间存在，训练结束后就被丢弃，因此可以给它**特权信息**——地面摩擦、精确的负载质量、地形高度图、施加的推力。
 
-This helps because it changes the critic's problem from partially observed to
-fully observed. A critic that cannot see the friction coefficient has to
-average over it, and that averaging appears as irreducible variance in its
-predictions, which becomes noise in every advantage estimate.
+这之所以有帮助，是因为它把 critic 的问题从部分可观测变成了完全可观测。一个看不到摩擦系数的 critic 只能对它求平均，而这种平均会表现为其预测中不可消除的方差，进而成为每一个优势估计中的噪声。
 
-It is not implemented here for a specific reason: sim-to-real is out of scope
-for this version, so the actor is *already* allowed privileged information —
-base linear velocity $v_b$ is in the observation, and a real Go2 cannot measure
-it directly. With no asymmetry between what the actor may see and what the
-critic may see, there is nothing for an asymmetric architecture to exploit.
-The moment you drop $v_b$ from the actor's observation for sim-to-real
-(chapter 16), asymmetric actor–critic becomes the first thing to add back.
+这里没有实现它，是出于一个具体的原因：本版本不涉及仿真到现实（sim-to-real），所以 actor *已经*被允许使用特权信息——机身线速度 $v_b$ 就在观测中，而真实的 Go2 无法直接测量它。既然 actor 能看到的与 critic 能看到的之间没有任何不对称，非对称架构也就无从发挥。一旦你为了仿真到现实而从 actor 的观测中去掉 $v_b$（第 16 章），非对称 actor–critic 就会成为第一个要加回来的东西。
 
-## 2.7 Summary
+## 2.7 小结
 
-| Object | Definition | What it is for |
+| 对象 | 定义 | 用途 |
 |--------|------------|----------------|
-| $V^\pi(s)$ | expected return from $s$ under $\pi$ | baseline; reduces gradient variance |
-| $Q^\pi(s,a)$ | expected return from $s$ after $a$, then $\pi$ | evaluating a specific action |
-| $A^\pi(s,a)$ | $Q^\pi - V^\pi$ | the actual learning signal |
-| Bellman eqs | value now = reward + discounted value next | lets us bootstrap instead of rolling out forever |
+| $V^\pi(s)$ | 在 $\pi$ 下从 $s$ 出发的期望回报 | 基线；降低梯度方差 |
+| $Q^\pi(s,a)$ | 从 $s$ 出发、先执行 $a$、再遵循 $\pi$ 的期望回报 | 评估某个具体动作 |
+| $A^\pi(s,a)$ | $Q^\pi - V^\pi$ | 真正的学习信号 |
+| 贝尔曼方程 | 现在的价值 = 奖励 + 下一步的折扣价值 | 让我们可以自举，而不必永远 rollout 下去 |
 
-The next chapter derives the gradient of $J(\theta)$ and shows that the
-advantage appears in it naturally, not as a heuristic.
+下一章将推导 $J(\theta)$ 的梯度，并说明优势是自然地出现在其中的，而不是一种启发式。
 
 ---
 
-**Previous:** [1. What reinforcement learning actually is](01-what-is-rl.md) ·
-**Next:** [3. Policy gradients from first principles](03-policy-gradients.md)
+**上一章：** [1. 强化学习到底是什么](01-what-is-rl.md) · **下一章：** [3. 从第一性原理推导策略梯度](03-policy-gradients.md)

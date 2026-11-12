@@ -1,20 +1,16 @@
-# 15. Results
+# 15. 结果
 
-This chapter separates three kinds of result, because they have very different
-evidential status and mixing them is how documentation becomes marketing.
+本章把结果分成三类，因为它们的证据地位截然不同，而把它们混为一谈，正是文档沦为营销材料的方式。
 
-1. **Verified engineering results** — measured, reproducible, independent of how
-   well any policy trains.
-2. **v1's published numbers** — reproduced from `logs/` as they were reported,
-   with the caveats that apply.
-3. **v2 policy performance** — measured by running the evaluation scripts on a
-   trained checkpoint. How to produce it, and what to expect.
+1. **经过验证的工程结果**——经过实测、可复现，且与任何策略训练得好坏无关。
+2. **v1 公布的数字**——按当初的报告从 `logs/` 中复现，并附上相应的注意事项。
+3. **v2 策略性能**——在训练好的检查点上运行评估脚本测得。如何得到它，以及应当期待什么。
 
-## 15.1 Verified engineering results
+## 15.1 经过验证的工程结果
 
-These do not depend on a trained policy and can be reproduced in minutes.
+这些结果不依赖训练好的策略，几分钟内即可复现。
 
-### The nominal pose (bug B1)
+### 名义姿态（bug B1）
 
 ```
 $ python scripts/check_env.py
@@ -26,7 +22,7 @@ nominal height    : 0.270 m
 matches Go2 home  : YES
 ```
 
-and the v1 pose, checked against the model's own joint limits:
+以及 v1 的姿态，对照模型自身的关节限位检查：
 
 ```
 FL_calf_joint    qpos0=+0.000 limits=[-2.723,-0.838] *** OUTSIDE LIMITS ***
@@ -35,16 +31,13 @@ RL_calf_joint    qpos0=+0.000 limits=[-2.723,-0.838] *** OUTSIDE LIMITS ***
 RR_calf_joint    qpos0=+0.000 limits=[-2.723,-0.838] *** OUTSIDE LIMITS ***
 ```
 
-Both directions are pinned as tests: `test_nominal_pose_is_a_standing_pose`
-asserts the fix, and `test_v1_nominal_pose_would_not_stand` asserts that driving
-the same PD controller toward v1's pose collapses the robot within two seconds.
+正反两个方向都被固定成了测试：`test_nominal_pose_is_a_standing_pose` 断言修复有效，`test_v1_nominal_pose_would_not_stand` 则断言：用同一个 PD 控制器把机器人驱向 v1 的姿态，机器人会在两秒内瘫倒。
 
-### Standing stability versus PD gain
+### 站立稳定性与 PD 增益
 
-Zero action, 150 control steps, then averaged. Sag is measured from the 0.27 m
-nominal pose.
+零动作，运行 150 个控制步后取平均。下沉量相对于 0.27 m 的名义姿态测量。
 
-| $k_p$ | $k_d$ | settled height | sag | peak torque |
+| $k_p$ | $k_d$ | 稳定后高度 | 下沉量 | 峰值力矩 |
 |---|---|---|---|---|
 | 20 | 0.5 | 0.196 m | 7.4 cm | 8.8 N·m |
 | 25 | 0.6 | 0.206 m | 6.4 cm | 10.4 N·m |
@@ -53,67 +46,52 @@ nominal pose.
 | 60 | 1.5 | 0.256 m | 1.4 cm | 7.1 N·m |
 | 80 | 2.0 | 0.261 m | 0.9 cm | 6.8 N·m |
 
-Height standard deviation at $k_p = 55$ is 0.0002 m — the robot stands still,
-not oscillating.
+在 $k_p = 55$ 时，高度标准差为 0.0002 m——机器人是静止站立的，而不是在振荡。
 
-### Swing clearance (bug B17)
+### 摆动抬足高度（bug B17）
 
-A scripted open-loop trot, no policy involved. Measured maximum foot air time
-and agreement with the commanded gait schedule:
+一个脚本化的开环小跑，不涉及任何策略。测量足端的最大腾空时间，以及与指令步态时序的吻合度：
 
-| $k_p$ | action scale | stance extension | max air time | schedule match |
+| $k_p$ | 动作缩放 | 支撑相伸展 | 最大腾空时间 | 时间表匹配度 |
 |---|---|---|---|---|
-| 40 | 0.25 | no | 0.12 s | 0.61 |
-| 40 | 0.25 | yes | 0.24 s | 0.61 |
-| 40 | 0.35 | yes | 0.24 s | 0.74 |
-| **55** | **0.30** | **yes** | **0.20 s** | **0.78** |
-| 80 | 0.35 | yes | 0.30 s | 0.84 |
+| 40 | 0.25 | 否 | 0.12 s | 0.61 |
+| 40 | 0.25 | 是 | 0.24 s | 0.61 |
+| 40 | 0.35 | 是 | 0.24 s | 0.74 |
+| **55** | **0.30** | **是** | **0.20 s** | **0.78** |
+| 80 | 0.35 | 是 | 0.30 s | 0.84 |
 
-Interpretation in [chapter 13, §13.5](13-training-diagnostics.md). The short
-version: a kinematic sweep says 0.25 rad retracts a foot 5.9 cm, which should be
-ample — but while two legs retract the other two sag under the whole robot, and
-the trunk drops by nearly as much as the swing foot rises.
+解读见[第 13 章 §13.5](13-training-diagnostics.md)。简而言之：运动学扫描表明 0.25 rad 能让足端收回 5.9 cm，这本该绰绰有余——但当两条腿收回时，另外两条腿要承受整个机器人的重量而下沉，躯干下降的幅度几乎和摆动足抬起的幅度一样大。
 
-### Speed envelope (bug B20)
+### 速度范围（bug B20）
 
-Top speed of a scripted open-loop trot, best over swing amplitude and phase.
-No policy, no learning:
+脚本化开环小跑的最高速度，取摆动幅度和相位上的最优值。没有策略，也没有学习：
 
-| action scale | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
+| 动作缩放 | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
 |---|---|---|---|---|
 | 0.30 | 0.52 | 0.62 | 0.65 | 0.69 |
 | **0.40** | **0.57** | **0.94** | **1.05** | **1.08** |
 
-A static kinematic sweep of stance-foot travel gives 0.29 m of stride at
-`action_scale = 0.40`, predicting 0.87 m/s at 3 Hz. The measured 1.08 m/s is
-higher, because body pitch, foot roll on the spherical contact and dynamic
-effects add stride the fixed-base sweep cannot see. The sweep is a useful lower
-bound and a bad ceiling.
+对支撑足行程做静态运动学扫描，在 `action_scale = 0.40` 下得到 0.29 m 的步幅，据此预测 3 Hz 时速度为 0.87 m/s。实测的 1.08 m/s 更高，因为机身俯仰、足端在球形接触上的滚动以及各种动力学效应都会增加步幅，而固定机身的扫描看不到这些。这种扫描是一个有用的下界，却是一个糟糕的上限。
 
-`action_scale` stops at 0.40 because $k_p \times \alpha = 22$ N·m against a
-23.7 N·m hip and thigh actuator limit.
+`action_scale` 止步于 0.40，因为此时 $k_p \times \alpha = 22$ N·m，而髋关节和大腿关节执行器的力矩上限是 23.7 N·m。
 
-### Does a competent gait out-score doing nothing?
+### 一个合格的步态，得分能超过什么都不做吗？
 
-The single most important pre-training check, and the one that would have caught
-all three v2 stalls. Scripted trot versus zero action, under the final reward:
+这是训练前最重要的一项检查，也正是本可以提前发现 v2 全部三次停滞的那一项。在最终奖励下，对比脚本化小跑与零动作：
 
-| command | scripted trot | standing | winner |
+| 指令 | 脚本化小跑 | 站立 | 胜者 |
 |---|---|---|---|
-| 0.50 m/s | $+0.02405$ | $+0.03669$ | standing |
-| 0.70 m/s | $+0.03298$ | $+0.03069$ | **trot** (+7%) |
-| 0.85 m/s | $+0.03785$ | $+0.02891$ | **trot** (+31%) |
+| 0.50 m/s | $+0.02405$ | $+0.03669$ | 站立 |
+| 0.70 m/s | $+0.03298$ | $+0.03069$ | **小跑**（+7%） |
+| 0.85 m/s | $+0.03785$ | $+0.02891$ | **小跑**（+31%） |
 
-The scripted controller is open loop and always runs at 0.94 m/s, so at a
-command of 0.5 it overshoots and is correctly penalised. At commands near its
-own speed it wins clearly.
+脚本化控制器是开环的，始终以 0.94 m/s 运行，所以在 0.5 的指令下它会超速，并理所应当地受到惩罚。在接近它自身速度的指令下，它明显胜出。
 
-Before the B19 fix, the trot lost at *every* command, by up to $-0.08$ per step.
+在修复 B19 之前，小跑在*每一个*指令下都会输，差距最高达每步 $-0.08$。
 
-### The gait mechanism, measured on a partially-trained policy
+### 在部分训练的策略上实测步态机制
 
-At 3M steps (before the B20 fix, so it trots on the spot rather than
-travelling), `scripts/gait_analysis.py` at a trot command:
+在 3M 步时（尚未修复 B20，所以它在原地小跑，而不是向前行进），以小跑指令运行 `scripts/gait_analysis.py`：
 
 ```
 schedule match      : 86.8%
@@ -124,38 +102,31 @@ RL (rear left)            0.640       2.00         0.48         0.50
 RR (rear right)           0.520       2.00         0.00         0.00
 ```
 
-Stride frequency is exactly the commanded 2.00 Hz on all four feet, and the
-diagonal pairing is correct (FL with RR near phase 0, FR with RL near 0.5). The
-phase-clock mechanism of chapter 11 works: the policy reads the clock from its
-observation and matches the schedule.
+四只足端的步频都恰好是指令的 2.00 Hz，对角配对也正确（FL 与 RR 在相位 0 附近，FR 与 RL 在 0.5 附近）。第 11 章的相位时钟机制是有效的：策略从观测中读取时钟，并与时序相匹配。
 
-### The do-nothing reward baseline
+### 什么都不做的奖励基线
 
-What a policy that never moves collects, Monte-Carlo over the configured command
-distribution:
+一个从不移动的策略能拿到多少奖励——在配置的指令分布上用蒙特卡洛方法估计：
 
-| initial command ranges | $\sigma_v$ | do-nothing tracking score |
+| 初始指令范围 | $\sigma_v$ | 什么都不做时的跟踪得分 |
 |---|---|---|
 | $[-0.3,0.6],[-0.2,0.2],[-0.4,0.4]$ | 0.25 | **0.79** |
 | $[-0.5,1.0],[-0.3,0.3],[-0.6,0.6]$ | 0.25 | 0.62 |
 | **$[-0.5,1.0],[-0.3,0.3],[-0.6,0.6]$** | **0.20** | **0.57** |
 | $[-1.0,1.5],[-0.7,0.7],[-1.5,1.5]$ | 0.20 | 0.30 |
 
-The shipped configuration, after the B20 feasibility clamp, sits at **0.571**
-against a promotion threshold of 0.85 — reported by `scripts/check_env.py`
-before every run.
+随仓库发布的配置在经过 B20 的可行性钳制之后，这个值是 **0.571**，而晋级阈值是 0.85——每次运行前，`scripts/check_env.py` 都会报告它。
 
-The first row is what this repository originally shipped, against a curriculum
-promotion threshold of 0.85. A statue scored 0.79.
+第一行是本仓库最初发布的配置，对应的课程晋级阈值为 0.85。一尊雕像就能拿到 0.79。
 
-### Throughput
+### 吞吐量
 
-| | steps/s |
+| | 每秒步数 |
 |---|---|
-| environment alone, before optimisation | 392 |
-| environment alone, after | **810** |
+| 仅环境，优化前 | 392 |
+| 仅环境，优化后 | **810** |
 
-| envs | backend | steps/s (end to end) |
+| 环境数 | 后端 | 每秒步数（端到端） |
 |---|---|---|
 | 4 | subproc | 382 |
 | 6 | subproc | 486 |
@@ -164,55 +135,37 @@ promotion threshold of 0.85. A statue scored 0.79.
 | 10 | dummy | 290 |
 | 16 | subproc | **616** |
 
-### Test suite
+### 测试套件
 
-79 tests, all passing: quaternion transforms against MuJoCo's own
-`mju_rotVecQuat`, the Euler convention, gait-schedule periodicity and duty
-factors, every reward term's sign and bounds, observation shape and finiteness,
-command conditioning, contact detection, and Gymnasium API compliance via SB3's
-`check_env`.
+79 个测试，全部通过：对照 MuJoCo 自带的 `mju_rotVecQuat` 检验四元数变换、欧拉角约定、步态时序的周期性与占空比、每个奖励项的符号与取值范围、观测的形状与有限性、指令条件化、接触检测，以及通过 SB3 的 `check_env` 检验 Gymnasium API 合规性。
 
-Two of them assert that v1's bugs were real rather than merely suspected:
-`test_v1_nominal_pose_would_not_stand` and
-`test_v1_gait_reward_was_maximised_by_standing_still`. Four more
-(`tests/test_mjx.py`) assert that the CPU and MJX backends compute the same
-reward from the same state, which is the claim that makes sharing
-`envs/rewards.py` across the two backends worth anything.
+其中两个测试断言 v1 的 bug 是真实存在的，而不只是怀疑：`test_v1_nominal_pose_would_not_stand` 和 `test_v1_gait_reward_was_maximised_by_standing_still`。另外四个（`tests/test_mjx.py`）断言 CPU 和 MJX 两个后端从同一状态算出相同的奖励——正是这一点，才让两个后端共享 `envs/rewards.py` 有了意义。
 
-## 15.2 v1's published numbers
+## 15.2 v1 公布的数字
 
-Reproduced from `logs/` as reported.
+按原报告从 `logs/` 中复现。
 
-| Metric | v1 |
+| 指标 | v1 |
 |---|---|
-| Mean forward speed | 0.737 m/s |
-| Peak episode speed | 0.874 m/s |
-| Mean episode length | 277 steps (11.1 s at 25 Hz) |
-| Evaluation episodes | 50 |
-| Training | 5M steps, 8 environments |
+| 平均前进速度 | 0.737 m/s |
+| 回合峰值速度 | 0.874 m/s |
+| 平均回合长度 | 277 步（25 Hz 下为 11.1 s） |
+| 评估回合数 | 50 |
+| 训练 | 5M 步，8 个环境 |
 
-Two caveats, neither of which makes the numbers wrong, both of which limit what
-they mean.
+有两点需要注意：它们都不会让这些数字变成错的，但都限制了这些数字的含义。
 
-**They measure one command.** Forward speed at a fixed forward command. There is
-no lateral or angular measurement, because the policy had no lateral or angular
-capability and the environment had no way to ask for one.
+**它们只测量了一个指令。** 即固定前进指令下的前进速度。没有横向或角速度方面的测量，因为该策略根本不具备横向或转向能力，环境也没有任何办法提出这样的要求。
 
-**Mean episode length was 277 of a possible 1000.** The robot fell, on average,
-after 11 seconds. The forward-speed figure is an average over the interval
-before it fell.
+**平均回合长度是 277，而上限是 1000。** 机器人平均 11 秒后就摔倒了。前进速度这个数字，是摔倒之前那段时间里的平均值。
 
-`logs/algorithm_comparison.md` is analysed separately in
-[chapter 7](07-why-not-sac-td3.md). Its headline conclusion is not supported by
-its experiment — in particular, all three algorithms were trained on the v1
-environment, in which walking was kinematically unreachable (B1).
+`logs/algorithm_comparison.md` 在[第 7 章](07-why-not-sac-td3.md)中单独分析。它的核心结论并没有得到其实验的支持——尤其是，三个算法都是在 v1 环境上训练的，而在该环境中，行走在运动学上是不可达的（B1）。
 
-## 15.3 v2 policy performance
+## 15.3 v2 策略性能
 
-### How to measure it
+### 如何测量
 
-The right measurement for a command-conditioned policy is tracking error across
-the command space, not speed at one command:
+对于一个以指令为条件的策略，正确的度量是整个指令空间上的跟踪误差，而不是某一个指令下的速度：
 
 ```bash
 make evaluate-grid                      # sweep each axis independently
@@ -221,49 +174,40 @@ make gait-analysis                      # duty factor, phase offsets, schedule m
 make gait-all                           # one gait diagram per gait
 ```
 
-`evaluate --grid` sweeps $v_x \in [-1.0, 1.5]$, $v_y \in [-0.75, 0.75]$ and
-$\omega_z \in [-1.5, 1.5]$ independently, plus four diagonal commands, holding
-each for 8 seconds after a 1-second settling period.
+`evaluate --grid` 分别独立地扫描 $v_x \in [-1.0, 1.5]$、$v_y \in [-0.75, 0.75]$ 和 $\omega_z \in [-1.5, 1.5]$，外加四个对角组合指令；每个指令在 1 秒的稳定期之后保持 8 秒。
 
-### What to report
+### 报告哪些指标
 
-| Metric | Why |
+| 指标 | 原因 |
 |---|---|
-| mean $\lvert v_x \rvert$ error | forward/backward tracking |
-| mean $\lvert v_y \rvert$ error | **strafing — v1 could not do this at all** |
-| mean $\lvert \omega_z \rvert$ error | **turning — v1 could not do this at all** |
-| survival rate | fraction of commands held without falling |
-| mean feet in contact | duty factor; should be near $4\beta = 2$ for a trot |
-| schedule match | the `gait_phase` reward as a percentage |
-| action jerk | smoothness; comparable across policies |
+| 平均 $\lvert v_x \rvert$ 误差 | 前进/后退跟踪 |
+| 平均 $\lvert v_y \rvert$ 误差 | **横移——v1 完全做不到** |
+| 平均 $\lvert \omega_z \rvert$ 误差 | **转向——v1 完全做不到** |
+| 存活率 | 未摔倒地保持住的指令所占比例 |
+| 平均触地足数 | 占空比；对小跑而言应接近 $4\beta = 2$ |
+| 时间表匹配度 | 以百分比表示的 `gait_phase` 奖励 |
+| 动作急动度（jerk） | 平滑度；可在不同策略之间比较 |
 
-The two rows in bold are the point. A forward-only policy scores well on $v_x$
-and badly on the other two, so the measurement makes the v1→v2 capability
-difference quantitative rather than rhetorical.
+加粗的两行才是重点。一个只会前进的策略在 $v_x$ 上得分很好，在另外两项上得分很差，所以这种测量让 v1→v2 的能力差异变成了量化的事实，而不是修辞。
 
-### Expected training trajectory
+### 预期的训练轨迹
 
-From [chapter 13, §13.4](13-training-diagnostics.md), for the default config at
-16 environments:
+根据[第 13 章 §13.4](13-training-diagnostics.md)，默认配置在 16 个环境下：
 
-| Steps | `ep_len_mean` | `rew/feet_air_time` | `tracking_lin_err` | `curriculum/level` |
+| 步数 | `ep_len_mean` | `rew/feet_air_time` | `tracking_lin_err` | `curriculum/level` |
 |---|---|---|---|---|
-| 0–200k | rising from ~100 | ~0 | ~0.45 | 0 |
-| 200k–1M | 400–1000 | becoming non-zero | 0.35–0.45 | 0 |
-| 1M–4M | ~1000 | clearly positive | 0.2–0.35 | climbing |
-| 4M–10M | ~1000 | positive and stable | 0.1–0.2 | approaching 1.0 |
+| 0–200k | 从 ~100 开始上升 | ~0 | ~0.45 | 0 |
+| 200k–1M | 400–1000 | 开始变为非零 | 0.35–0.45 | 0 |
+| 1M–4M | ~1000 | 明显为正 | 0.2–0.35 | 攀升中 |
+| 4M–10M | ~1000 | 为正且稳定 | 0.1–0.2 | 接近 1.0 |
 
-`rew/feet_air_time` becoming non-zero is the milestone that matters. It is
-credited only on touchdown, so a non-zero value is the first proof that a foot
-has genuinely left the ground.
+`rew/feet_air_time` 变为非零，才是真正重要的里程碑。它只在足端触地时才计分，所以非零值是足端真正离开过地面的第一个证据。
 
-### Reward shaping, verified without training
+### 无需训练即可验证的奖励塑形
 
-One measurement that *is* complete, and that gates everything above. Under the
-final reward, a scripted open-loop trot is compared against zero action, per
-control step:
+有一项测量*是*完整的，而且它是上面所有内容的前提。在最终奖励下，逐控制步比较脚本化开环小跑与零动作：
 
-| term | standing | scripted trot | diff |
+| 奖励项 | 站立 | 脚本化小跑 | 差值 |
 |---|---|---|---|
 | `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
 | `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
@@ -272,39 +216,31 @@ control step:
 | `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
 | `feet_slip` | $-0.00000$ | $-0.00085$ | $-0.00085$ |
 
-Stepping pays about $+0.012$ per step gross and $+0.007$ net of its costs,
-before any credit for locomotion; tracking 0.8 m/s adds a further $+0.029$.
+迈步每步的毛收益约为 $+0.012$，扣除其代价后净收益为 $+0.007$，这还没算上运动本身应得的任何奖励；跟踪 0.8 m/s 还能再多拿 $+0.029$。
 
-Before the B19 fix the `feet_air_time` row read $-0.08$ per step, and a perfect
-trot scored roughly four times worse than standing still. That single number is
-why three successive runs stalled, and it was measurable in minutes without
-training anything.
+在修复 B19 之前，`feet_air_time` 这一行的读数是每步 $-0.08$，一套完美的小跑得分比原地站着差了大约四倍。正是这一个数字，导致了连续三次训练运行停滞不前，而它本来不用训练任何东西、几分钟内就能测出来。
 
-### Results
+### 结果
 
-Run: 18.76M steps, 16 environments, seed 0, about 8 hours at ~600 steps/s. The
-curriculum reached level 1.0 (full command envelope). Final
-`explained_variance` 0.93, policy std annealed from 0.37 to 0.18.
+训练运行：18.76M 步，16 个环境，随机种子 0，以约 600 steps/s 的速度跑了大约 8 小时。课程达到了 1.0 级（完整的指令范围）。最终 `explained_variance` 为 0.93，策略标准差从 0.37 退火到 0.18。
 
-**Tracking, 30 random commands drawn from the trained envelope, 8 s each**
-(`make evaluate`):
+**跟踪：从训练范围中随机抽取 30 个指令，每个 8 s**（`make evaluate`）：
 
-| Metric | v2 | v1 |
+| 指标 | v2 | v1 |
 |---|---|---|
-| mean $\lvert v_x \rvert$ error | **0.021 m/s** | not measured (no command) |
-| mean $\lvert v_y \rvert$ error | **0.028 m/s** | **not possible** |
-| mean $\lvert \omega_z \rvert$ error | **0.035 rad/s** | **not possible** |
-| survival rate | **100%** | fell after 277 of 1000 steps |
-| mean body height | 0.275 m | — |
-| mean feet in contact | **2.00 / 4** | — |
-| action jerk | 0.152 | — |
+| 平均 $\lvert v_x \rvert$ 误差 | **0.021 m/s** | 未测量（无指令） |
+| 平均 $\lvert v_y \rvert$ 误差 | **0.028 m/s** | **无法实现** |
+| 平均 $\lvert \omega_z \rvert$ 误差 | **0.035 rad/s** | **无法实现** |
+| 存活率 | **100%** | 在 1000 步中的第 277 步摔倒 |
+| 平均机身高度 | 0.275 m | — |
+| 平均触地足数 | **2.00 / 4** | — |
+| 动作急动度 | 0.152 | — |
 
-Two feet in contact out of four is exactly the duty factor of a trot, arrived at
-without being told directly.
+四只脚中有两只触地，恰好就是小跑的占空比——而策略从未被直接告知这一点。
 
-**Per-axis sweep** (`make evaluate-grid`), commanded versus achieved:
+**逐轴扫描**（`make evaluate-grid`），指令值与实际达到值对比：
 
-| $v_x$ command | achieved | | $v_y$ command | achieved | | $\omega_z$ command | achieved |
+| $v_x$ 指令 | 实际值 | | $v_y$ 指令 | 实际值 | | $\omega_z$ 指令 | 实际值 |
 |---|---|---|---|---|---|---|---|
 | $-1.00$ | $-0.829$ | | $-0.50$ | $-0.395$ | | $-1.50$ | $-1.508$ |
 | $-0.75$ | $-0.714$ | | $-0.25$ | $-0.211$ | | $-1.00$ | $-1.006$ |
@@ -316,16 +252,11 @@ without being told directly.
 | $\phantom{-}1.00$ | $\phantom{-}0.936$ | | | | | | |
 | $\phantom{-}1.50$ | $\phantom{-}0.908$ | | | | | | |
 
-Yaw tracking is essentially exact. Forward tracking holds to within 0.07 m/s
-across the trained band and then saturates near 0.94 m/s — which is the right
-behaviour, because the trained envelope stops at 0.85 and the measured
-kinematic ceiling is about 1.08 (§15.1). The $\pm 0.75$ strafe commands are
-outside the trained $\pm 0.40$ range and degrade accordingly.
+偏航跟踪基本上是精确的。前进跟踪在训练覆盖的区间内误差保持在 0.07 m/s 以内，之后在 0.94 m/s 附近饱和——这是正确的行为，因为训练范围止于 0.85，而实测的运动学上限约为 1.08（§15.1）。$\pm 0.75$ 的横移指令超出了训练时的 $\pm 0.40$ 范围，表现也相应变差。
 
-Combined commands work: $(0.80, 0, 0.80)$ gives $(0.795, -0.023, 0.765)$ — a
-simultaneous forward-and-turn arc.
+组合指令同样有效：$(0.80, 0, 0.80)$ 得到 $(0.795, -0.023, 0.765)$——一条边前进边转弯的弧线。
 
-**Gait** (`make gait-analysis`, command 0.7 m/s):
+**步态**（`make gait-analysis`，指令 0.7 m/s）：
 
 ```
 schedule match      : 96.0%
@@ -337,25 +268,17 @@ RR (rear right)           0.480       2.00         0.00         0.00
 mean duty factor    : 0.500   (reference 0.50)
 ```
 
-Duty factor 0.500 against a reference of 0.50, stride frequency exactly the
-commanded 2.00 Hz on every foot, and phase offsets within 0.02 of the trot
-reference. The phase-clock mechanism of chapter 11 does what it claims.
+占空比 0.500，参考值 0.50；每只足端的步频都恰好是指令的 2.00 Hz；相位偏移与小跑参考值相差不到 0.02。第 11 章的相位时钟机制做到了它所宣称的事。
 
-### What this checkpoint does NOT do
+### 这个检查点做不到什么
 
-Stated plainly, because the mechanism supports it and this policy does not.
+这里直说，因为机制本身支持这些，而这个策略并不支持。
 
-**It does not change gait on command.** Asked for a pace, bound or walk, it
-trots anyway: schedule match drops to 50%, which is chance.
+**它不会按指令切换步态。** 要求它溜蹄、跳跃步或慢步（walk），它照样小跑：时间表匹配度降到 50%，也就是随机水平。
 
-That is expected, and chapter 11, §11.8 predicted it. The config ships
-`gaits: ["trot"]`, so the offsets were constant throughout training, and only
-the *global* clock is in the observation — the gait identity is not. The policy
-is being asked to satisfy a schedule it cannot see. Training a genuinely
-multi-gait policy needs the per-foot clock (`clock_signal` in `envs/gait.py`,
-eight numbers instead of two) and the wider `gaits` list.
+这在意料之中，第 11 章 §11.8 已经预言过。配置中发布的是 `gaits: ["trot"]`，所以相位偏移在整个训练过程中都是常量，而且观测中只有*全局*时钟——没有步态的身份。策略被要求去满足一个它看不见的时序。要训练一个真正的多步态策略，需要逐足时钟（`envs/gait.py` 中的 `clock_signal`，八个数而不是两个）以及更宽的 `gaits` 列表。
 
-`scripts/gait_analysis.py` diagnoses this correctly and unprompted:
+`scripts/gait_analysis.py` 无需提示，就正确地诊断出了这一点：
 
 ```
   - Poor schedule match: either gait_phase's weight is too low, or the
@@ -364,39 +287,26 @@ eight numbers instead of two) and the wider `gaits` list.
     a different gait from the one asked for.
 ```
 
-**It has not been trained beyond 0.85 m/s**, and would need a larger action
-scale (and therefore a stiffer actuator budget) to go much faster.
+**它没有在超过 0.85 m/s 的速度上训练过**，要想快得多，就需要更大的动作缩放（因而对执行器的力矩预算也要求更苛刻）。
 
-**It is not sim-to-real ready.** See chapter 16 — the actor still observes base
-linear velocity, which a real Go2 cannot measure.
+**它还没有为仿真到现实做好准备。** 见第 16 章——actor 仍然观测机身线速度，而真实的 Go2 无法测量这个量。
 
-## 15.4 What is honestly claimed
+## 15.4 可以如实声称的内容
 
-**Established:**
+**已经确立的：**
 
-- v1's nominal pose was outside the robot's joint limits, and its reachable
-  target set did not intersect the calf's legal range. This is arithmetic, not
-  interpretation.
-- v1's gait reward was maximised, permanently, by a motionless robot.
-- v1's curriculum could not command lateral or angular velocity, and its reward
-  had no term for lateral tracking. A forward-only gait was the only outcome
-  the environment permitted.
-- Resuming v1 training discarded the observation normalisation statistics.
-- The v2 environment can express a trot: a hand-written open-loop controller
-  reaches 0.78 schedule match with no learning at all.
-- Environment throughput doubled after profiling.
-- Under the final reward, a scripted trot out-scores standing on the stepping
-  terms; under the reward as it stood before B19, it did not.
+- v1 的名义姿态超出了机器人的关节限位，而且其可达目标集合与小腿关节的合法范围没有交集。这是算术，不是解读。
+- v1 的步态奖励被一台静止不动的机器人永久性地最大化了。
+- v1 的课程无法指令横向速度或角速度，其奖励也没有针对横向跟踪的项。只会前进的步态，是该环境所允许的唯一结果。
+- 恢复 v1 训练时丢弃了观测归一化统计量。
+- v2 环境能够表达小跑：一个手写的开环控制器在完全没有学习的情况下，就达到了 0.78 的时间表匹配度。
+- 经过性能剖析后，环境吞吐量翻了一番。
+- 在最终奖励下，脚本化小跑在迈步相关的奖励项上得分超过站立；而在修复 B19 之前的奖励下，并非如此。
 
-- The v2 policy tracks commands to 0.021 m/s, 0.028 m/s and 0.035 rad/s on the
-  three axes, over 30 random commands from the trained envelope, with a 100%
-  survival rate and a measured duty factor of exactly 0.500.
+- v2 策略在三个轴上的指令跟踪误差分别为 0.021 m/s、0.028 m/s 和 0.035 rad/s，统计自从训练范围中随机抽取的 30 个指令，存活率 100%，实测占空比恰好为 0.500。
 
-**Not claimed:** that this checkpoint can change gait on command (it cannot -
-it was trained on trot alone and the gait identity is not in its observation),
-that it exceeds 0.85 m/s, or that it would transfer to hardware.
+**不声称的：** 这个检查点能按指令切换步态（它不能——它只在小跑上训练过，而且步态身份不在其观测中）；它能超过 0.85 m/s；或者它能迁移到硬件上。
 
 ---
 
-**Previous:** [14. The debugging log](14-debugging-log.md) ·
-**Next:** [16. What sim-to-real would take](16-sim-to-real.md)
+**上一章：** [14. 调试日志](14-debugging-log.md) · **下一章：** [16. 从仿真到现实还需要什么](16-sim-to-real.md)

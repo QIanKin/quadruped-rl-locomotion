@@ -1,248 +1,167 @@
-# 10. Reward engineering
+# 10. 奖励工程
 
-This is the chapter that matters most in practice. The algorithm is the same one
-everyone uses; the reward is what makes this robot walk rather than some other
-robot doing something else.
+这是在实践中最重要的一章。算法是人人都在用的同一个；真正决定这台机器人能走起来、而不是变成另一台做着别的事情的机器人的，是奖励。
 
-The governing principle: **the agent optimises what you wrote, not what you
-meant.** Every gap between the two will be found and exploited, because finding
-gaps in an objective function is precisely what an optimiser does.
+指导原则：**智能体优化的是你写下的东西，而不是你想表达的东西。** 两者之间的每一条缝隙都会被找到并被利用，因为在目标函数里找缝隙，恰恰就是优化器的本职工作。
 
-## 10.1 Conventions
+## 10.1 约定
 
-Three, and all three exist because of something that went wrong without them.
+三条，而且这三条之所以存在，都是因为没有它们的时候出过问题。
 
-**Sign lives in the config, not the function.** A function named like a penalty
-returns a non-negative cost; its configured weight is negative. So the sign of a
-weight in `configs/training_config.yaml` always tells you whether the term is a
-carrot or a stick, with no need to read the code.
+**符号放在配置里，而不是函数里。** 一个以惩罚项命名的函数返回一个非负的代价；它配置的权重是负的。因此，`configs/training_config.yaml` 中权重的符号总能告诉你这一项是胡萝卜还是大棒，不需要去读代码。
 
-**Weights are per second.** The environment computes
-$r_t = \Delta t \sum_i w_i f_i(s_t)$. Changing the control rate therefore does
-not silently rescale the objective. Without this, v2's move from 25 Hz to 50 Hz
-would have halved every per-step reward and doubled the episode's step count,
-leaving the total return unchanged but the *per-step* reward — which is what the
-critic predicts — different by a factor of two.
+**权重以每秒为单位。** 环境计算的是 $r_t = \Delta t \sum_i w_i f_i(s_t)$。因此，改变控制频率不会悄悄地重新缩放目标。如果没有这一点，v2 从 25 Hz 改为 50 Hz 会让每一步的奖励减半、回合的步数翻倍，总回报不变，但*每步*奖励——也就是 critic 所预测的东西——会相差一倍。
 
-**Every term is a separate pure function.** `envs/rewards.py` defines each as a
-function of a `RewardState` snapshot, registered in `REWARD_TERMS`. This buys
-three things: ablation is a config edit, per-term logging is automatic, and each
-term is unit-testable in isolation at a hand-constructed state. v1 had all eight
-terms inline in one 40-line method with the weights hard-coded mid-expression,
-which is why a broken term survived five documented training runs.
+**每一项都是一个独立的纯函数。** `envs/rewards.py` 把每一项定义为一个关于 `RewardState` 快照的函数，并注册在 `REWARD_TERMS` 中。这带来三个好处：消融实验只需改一下配置，逐项日志记录是自动的，而且每一项都可以在一个手工构造的状态下单独做单元测试。v1 把全部八项都内联在一个 40 行的方法里，权重硬编码在表达式中间，这就是为什么一个坏掉的项能在五次有记录的训练运行中一直存活下来。
 
-## 10.2 The terms
+## 10.2 各个奖励项
 
-### Task terms
+### 任务项
 
-**`track_lin_vel_xy`** — weight $+1.5$
+**`track_lin_vel_xy`** —— 权重 $+1.5$
 
 $$
 r = \exp\left( -\frac{\Vert \mathbf{v}^*_{xy} - \mathbf{v}_{xy} \Vert ^2}{\sigma_v} \right), \qquad \sigma_v = 0.20
 \tag{10.1}
 $$
 
-The main objective. Both axes, base frame. Bounded in $(0, 1]$.
+主要目标。两个轴，机身坐标系。有界，取值在 $(0, 1]$。
 
-**`track_ang_vel_yaw`** — weight $+0.75$
+**`track_ang_vel_yaw`** —— 权重 $+0.75$
 
 $$
 r = \exp\left( -\frac{(\omega_z^* - \omega_z)^2}{\sigma_\omega} \right), \qquad \sigma_\omega = 0.25
 \tag{10.2}
 $$
 
-Half the weight of linear tracking, which reflects that turning is the easier
-half of the problem and should not dominate.
+权重是线速度跟踪的一半，这反映出转向是问题中较容易的那一半，不应占据主导。
 
-**`gait_phase`** — weight $+1.5$
+**`gait_phase`** —— 权重 $+1.5$
 
 $$
 r = \frac{1}{4}\sum_{i=1}^{4} \Big[ c_i d_i + (1 - c_i)(1 - d_i) \Big]
 \tag{10.3}
 $$
 
-with $c_i$ the actual contact and $d_i$ the scheduled one (chapter 11). "Fraction
-of feet doing the right thing", in $[0,1]$.
+其中 $c_i$ 是实际接触，$d_i$ 是计划接触（第 11 章）。即“做对了的足端所占的比例”，取值在 $[0,1]$。
 
-**`feet_clearance`** — weight $-30.0$
+**`feet_clearance`** —— 权重 $-30.0$
 
 $$
 r = \sum_{i=1}^{4} (1 - d_i)(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
 \tag{10.3b}
 $$
 
-A cost on how far each *swing* foot is from a target height. §10.4b explains why
-this term, rather than `gait_phase`, is what makes stepping discoverable.
+对每只*摆动*足端偏离目标高度的程度施加的代价。§10.4b 解释了为什么是这一项、而不是 `gait_phase`，让迈步变得可以被发现。
 
-**`feet_air_time`** — weight $+1.0$
+**`feet_air_time`** —— 权重 $+1.0$
 
 $$
 r = \mathbb{1}\big[\Vert \mathbf{c}\Vert > 0.1\big] \sum_{i=1}^{4} \min\big(t^{\text{air}}_i,\ t_{\text{swing}}\big) \mathbb{1}[\text{foot } i \text{ just landed}]
 \tag{10.4}
 $$
 
-with $t_{\text{swing}} = (1 - \beta)/f$ taken from the active gait command.
-Credited only on touchdown; non-negative; saturating at the scheduled swing
-duration. Gated on a non-zero command, or it bribes a standing robot to fidget.
+其中 $t_{\text{swing}} = (1 - \beta)/f$ 取自当前生效的步态指令。只在触地时计入；非负；在计划的摆动时长处饱和。以非零指令作为门控条件，否则它会收买一台站着的机器人去乱动。
 
-The obvious formulation — $\sum_i (t^{\text{air}}_i - 0.5)$, which is what
-legged_gym uses — is **actively wrong here**, and §10.4c works through why.
+显而易见的写法——$\sum_i (t^{\text{air}}_i - 0.5)$，也就是 legged_gym 所用的形式——在这里是**实打实的错误**，§10.4c 会详细推演原因。
 
-**`alive`** — weight $+0.25$
+**`alive`** —— 权重 $+0.25$
 
-A constant. Small on purpose: v1 used 0.5, twice this, against a total positive
-reward of about 2.5 - and its own logs record the result. See §10.5.
+一个常数。刻意设得很小：v1 用的是 0.5，是这里的两倍，而总的正奖励只有大约 2.5——它自己的日志记录下了后果。见 §10.5。
 
-### Regularisation terms
+### 正则化项
 
-| Term | Weight | Formula | Purpose |
+| 项 | 权重 | 公式 | 目的 |
 |---|---|---|---|
-| `lin_vel_z` | $-2.0$ | $v_z^2$ | stop the trunk bouncing |
-| `ang_vel_xy` | $-0.05$ | $\Vert \omega_{xy}\Vert ^2$ | stop the body wobbling |
-| `orientation` | $-1.0$ | $\Vert g_{b,xy}\Vert ^2$ | stay level |
-| `base_height` | $-5.0$ | $(h - h^*)^2$ | hold the commanded ride height |
-| `torques` | $-2\times10^{-4}$ | $\sum \tau_i^2$ | energy |
-| `joint_acceleration` | $-2.5\times10^{-7}$ | $\sum ((\dot q_i - \dot q_i^{-})/\Delta t)^2$ | no judder |
-| `action_rate` | $-0.01$ | $\Vert a - a^{-}\Vert ^2$ | smooth commands |
-| `joint_limits` | $-10.0$ | out-of-soft-range excess | do not lean on the endstops |
-| `collision` | $-1.0$ | count of non-foot ground contacts | knees off the floor |
-| `feet_slip` | $-0.05$ | $\sum_i c_i \Vert \mathbf{v}^{\text{foot}}_{i,xy}\Vert ^2$ | no skating |
-| `stand_still` | $-0.5$ | $\mathbb{1}[\Vert \mathbf{c}\Vert < 0.1] \sum_i \Vert q_i - q_{\text{nom},i}\Vert $ | actually stop when told |
+| `lin_vel_z` | $-2.0$ | $v_z^2$ | 防止躯干上下弹跳 |
+| `ang_vel_xy` | $-0.05$ | $\Vert \omega_{xy}\Vert ^2$ | 防止身体摇晃 |
+| `orientation` | $-1.0$ | $\Vert g_{b,xy}\Vert ^2$ | 保持水平 |
+| `base_height` | $-5.0$ | $(h - h^*)^2$ | 保持指令给定的机身高度 |
+| `torques` | $-2\times10^{-4}$ | $\sum \tau_i^2$ | 能耗 |
+| `joint_acceleration` | $-2.5\times10^{-7}$ | $\sum ((\dot q_i - \dot q_i^{-})/\Delta t)^2$ | 不要抖动 |
+| `action_rate` | $-0.01$ | $\Vert a - a^{-}\Vert ^2$ | 指令平滑 |
+| `joint_limits` | $-10.0$ | 超出软限位范围的部分 | 不要倚靠在限位挡块上 |
+| `collision` | $-1.0$ | 非足端部位与地面接触的数量 | 膝盖别着地 |
+| `feet_slip` | $-0.05$ | $\sum_i c_i \Vert \mathbf{v}^{\text{foot}}_{i,xy}\Vert ^2$ | 不要滑行 |
+| `stand_still` | $-0.5$ | $\mathbb{1}[\Vert \mathbf{c}\Vert < 0.1] \sum_i \Vert q_i - q_{\text{nom},i}\Vert $ | 叫停时真的停下来 |
 
-Three of these deserve a note.
+其中有三项值得说明一下。
 
-**`joint_acceleration`'s weight looks absurdly small** — $2.5\times10^{-7}$ —
-because the quantity is enormous. At 50 Hz a 1 rad/s change in one step is
-50 rad/s², squared is 2500, summed over twelve joints is $3\times10^4$. The
-product lands at the same order as the other terms. Whenever a weight looks
-wrong by orders of magnitude, check the units of the thing it multiplies.
+**`joint_acceleration` 的权重看起来小得离谱**——$2.5\times10^{-7}$——因为这个量本身极其巨大。在 50 Hz 下，一步之内 1 rad/s 的变化就是 50 rad/s²，平方后是 2500，对十二个关节求和就是 $3\times10^4$。乘积最终与其他项落在同一数量级。每当一个权重看起来差了几个数量级时，先检查它所乘的那个量的单位。
 
-**`joint_limits` uses a *soft* limit**, 5% inside the hard one. MuJoCo enforces
-the hard limit for us, so without this term the policy learns a gait that leans
-on the endstop — free force, in simulation, from a mechanical stop that on real
-hardware is a rubber bumper and a warranty claim.
+**`joint_limits` 使用的是*软*限位**，比硬限位往里收 5%。MuJoCo 会替我们强制执行硬限位，因此如果没有这一项，策略会学出一种倚靠在限位挡块上的步态——在仿真里，这是从机械限位那里白拿的力，而在真实硬件上，那个机械限位是一块橡胶缓冲垫，外加一张保修索赔单。
 
-**`feet_slip` is gated on contact.** A swinging foot is *supposed* to move. Only
-a loaded foot that is moving is skating.
+**`feet_slip` 以接触作为门控条件。** 摆动中的足端*本来就*应该移动。只有承载着重量还在移动的足端，才是在滑行。
 
-## 10.3 Exponential kernels versus quadratic costs
+## 10.3 指数核与二次代价
 
-Why is velocity tracking $\exp(-e^2/\sigma)$ and not $-e^2$?
+为什么速度跟踪用的是 $\exp(-e^2/\sigma)$，而不是 $-e^2$？
 
-**A quadratic cost is unbounded below.** Early in training $e$ is large — the
-robot is on its side — so $-e^2$ dominates every other term. And the fastest way
-to reduce it is to reduce $\Vert v\Vert $, i.e. to stop moving. A negative-quadratic
-tracking reward actively teaches a beginner policy to freeze.
+**二次代价没有下界。** 训练早期 $e$ 很大——机器人还侧躺在地上——因此 $-e^2$ 会压倒其他所有项。而减小它最快的办法是减小 $\Vert v\Vert $，也就是停止移动。一个负二次形式的跟踪奖励，会主动教会初学阶段的策略僵住不动。
 
-**The exponential is bounded and its gradient is where you want it.**
+**指数函数是有界的，而且它的梯度出现在你想要的地方。**
 
 $$
 \frac{\mathrm{d}}{\mathrm{d}e}\exp(-e^2/\sigma) = -\frac{2e}{\sigma}\exp(-e^2/\sigma)
 $$
 
-This is near zero for large $e$ (nothing to gain by flailing), maximal around
-$e = \sqrt{\sigma/2}$, and near zero again at $e = 0$. The learning pressure is
-concentrated exactly where the policy is close but not yet right.
+它在 $e$ 很大时接近零（乱扑腾毫无收益），在 $e = \sqrt{\sigma/2}$ 附近达到最大，在 $e = 0$ 时又重新接近零。学习压力恰好集中在策略已经接近、但还不完全正确的地方。
 
-**But it saturates**, and that is a real cost. At $e = 1.5$ m/s the gradient is
-$\approx 4\times10^{-5}$: essentially flat. A policy that starts very far from
-the command gets almost no signal. Which brings us to the failure this
-repository actually hit.
+**但它会饱和**，而这是一个实实在在的代价。在 $e = 1.5$ m/s 时，梯度 $\approx 4\times10^{-5}$：基本上是平的。一个起点离指令很远的策略，几乎得不到任何信号。这就引出了本仓库实际遇到过的那次失败。
 
-## 10.4 A worked failure: the standing local optimum
+## 10.4 一个失败实例：站立的局部最优
 
-This happened during the v2 run, not v1, and it is the best illustration in the
-book of why reward *geometry* matters as much as reward *terms*.
+这发生在 v2 的训练运行中，而不是 v1，它是全书中最能说明为什么奖励的*几何形状*与奖励的*各项*同样重要的例子。
 
-At 524,000 steps the training log looked healthy: `explained_variance` 0.91,
-episode length pinned at the 1000-step limit (never falling), episode return
-climbing to ~40. `track_lin_vel_xy` was at 77% of its maximum.
+在 524,000 步时，训练日志看起来很健康：`explained_variance` 为 0.91，回合长度稳稳顶在 1000 步的上限（从不摔倒），回合回报攀升到约 40。`track_lin_vel_xy` 达到了其最大值的 77%。
 
-And `feet_air_time` was exactly $0.0000$.
+而 `feet_air_time` 恰好是 $0.0000$。
 
-That number can only be zero if `feet_first_contact` is never 1 — if no foot
-ever touches down, because no foot ever leaves the ground. The robot had learned
-to stand, lean, and shuffle its weight, and to collect 77% of the velocity
-reward while doing it.
+这个数只有在 `feet_first_contact` 从来不为 1 时才可能为零——也就是说，没有任何一只足端触过地，因为没有任何一只足端离开过地面。机器人学会了站着、倾身、来回挪动重心，并且靠这样拿到了 77% 的速度奖励。
 
-The arithmetic explains why. Under the initial command ranges
-($v_x \in [-0.3, 0.6]$, $v_y \in [-0.2,0.2]$, $\omega_z \in [-0.4,0.4]$, 10%
-explicit stands) the typical commanded speed is about 0.3 m/s. A **perfectly
-stationary** robot therefore has $e \approx 0.3$ and collects
+算一算就明白为什么了。在初始指令范围下（$v_x \in [-0.3, 0.6]$，$v_y \in [-0.2,0.2]$，$\omega_z \in [-0.4,0.4]$，另有 10% 为显式的站立指令），典型的指令速度约为 0.3 m/s。因此一台**完全静止**的机器人的 $e \approx 0.3$，能拿到
 
 $$
 \exp(-0.3^2/0.25) = 0.70
 $$
 
-Monte-Carlo over the actual command distribution gives **0.739 of the maximum
-tracking reward, for doing nothing at all.** The policy's 0.77 was barely above
-that floor.
+在实际的指令分布上做蒙特卡洛估计，结果是**最大跟踪奖励的 0.739，而且什么都不用做。** 策略的 0.77 仅仅略高于这个底线。
 
-So the situation was: standing pays 74%, walking pays 100%, and getting from one
-to the other requires crossing a region where the robot falls over and collects
-the `collision` penalty and an early termination. A 26% upside does not buy
-that.
+于是局面是这样的：站着能拿 74%，走起来能拿 100%，而从前者走到后者，需要穿过一个机器人会摔倒、吃到 `collision` 惩罚项并提前终止的区域。26% 的上行空间，不值得冒这个险。
 
-**Three changes, each attacking a different part of the geometry.**
+**三处改动，各自针对几何形状的不同部分。**
 
-1. **Widen the initial command range** to $v_x \in [-0.5, 1.0]$,
-   $v_y \in [-0.3,0.3]$, $\omega_z \in [-0.6,0.6]$. Larger commands mean larger
-   $e$ for a stationary robot, so the do-nothing floor drops from 0.739 to
-   0.488. This is counter-intuitive — the curriculum's *starting* point was made
-   harder — but the curriculum's job is to make the task **learnable**, not
-   easy, and a task where standing nearly wins is not learnable.
+1. **放宽初始指令范围**，改为 $v_x \in [-0.5, 1.0]$，$v_y \in [-0.3,0.3]$，$\omega_z \in [-0.6,0.6]$。更大的指令意味着静止机器人的 $e$ 更大，因此“什么都不做”的底线从 0.739 降到 0.488。这有违直觉——课程的*起点*反而变难了——但课程的任务是让任务**可学习**，而不是让它变简单，而一个站着就几乎能赢的任务是不可学习的。
 
-2. **Sharpen the kernel**, $\sigma_v: 0.25 \to 0.20$. Directly reduces what a
-   near-miss earns.
+2. **让核更尖锐**，$\sigma_v: 0.25 \to 0.20$。直接降低差一点就对时所能拿到的奖励。
 
-3. **Raise `gait_phase` from 0.5 to 1.5.** This is the important one. Consider
-   what signal each term provides *to a robot that has never stepped*:
+3. **把 `gait_phase` 从 0.5 提高到 1.5。** 这是最重要的一处。想一想每一项能给*一台从未迈过步的机器人*提供什么信号：
 
-   - `track_lin_vel_xy` rewards the *result* of walking. Undiscoverable until
-     you are already walking.
-   - `feet_air_time` pays at touchdown. Exactly zero if you have never lifted a
-     foot. It cannot bootstrap; it can only refine.
-   - `gait_phase` pays, densely and every single step, for having the right feet
-     on the ground right now. A stationary robot scores 0.5 under a trot
-     schedule; lifting one foot at the right moment immediately scores 0.75.
+   - `track_lin_vel_xy` 奖励的是行走的*结果*。在你已经会走之前，它是无法被发现的。
+   - `feet_air_time` 在触地时才付钱。如果你从未抬起过一只脚，它恰好为零。它无法自举（bootstrap），只能精修。
+   - `gait_phase` 每一步都稠密地为“此刻该着地的足端正着地”付钱。在小跑时间表下，一台静止的机器人得 0.5 分；在正确的时刻抬起一只脚，立刻就能得 0.75 分。
 
-   The phase reward is the only term that provides a gradient *toward* stepping
-   rather than a reward *for* stepping. That is precisely why it exists, and
-   under-weighting it wasted half a million steps.
+   相位奖励是唯一一个提供*朝向*迈步的梯度、而不是*为*迈步付奖励的项。这正是它存在的原因，而给它的权重过低，白白浪费了五十万步。
 
-Measured effect of the change, on a random-action rollout: `gait_phase` went
-from 14% to 33% of the gross reward, becoming the largest single term. The
-do-nothing tracking score fell from 0.79 to 0.57 against an unchanged promotion
-threshold of 0.85.
+在一次随机动作 rollout 上测得的改动效果：`gait_phase` 在总奖励中的占比从 14% 升到 33%，成为最大的单项。“什么都不做”的跟踪得分从 0.79 降到 0.57，而晋级阈值保持 0.85 不变。
 
-The general lesson: **compute what a do-nothing policy scores under your reward,
-before you train.** It takes twenty lines of numpy and it tells you whether
-there is a gradient out of the trivial solution. This is now a section of
-`scripts/check_env.py`.
+通用的教训：**在训练之前，先算出一个什么都不做的策略在你的奖励下能拿多少分。** 这只需要二十行 numpy，而它会告诉你是否存在一条走出平凡解的梯度。这现在已经是 `scripts/check_env.py` 中的一个部分。
 
-## 10.4b The second stall: a reward with no gradient
+## 10.4b 第二次停滞：一个没有梯度的奖励
 
-Fixing §10.4 was not enough. A second run reached 1.1 million steps with
-`rew/feet_air_time` still at zero and `rew/gait_phase` at 55% of its maximum —
-which is exactly what a fully-planted robot scores under a 50% duty schedule.
-The policy was still standing.
+修复 §10.4 还不够。第二次训练运行跑到了 110 万步，`rew/feet_air_time` 依然为零，`rew/gait_phase` 停在其最大值的 55%——这恰好是一台四足全部踩实的机器人在 50% 占空比时间表下的得分。策略仍然站着不动。
 
-The diagnosis is a nice one, because the reward was not *wrong* this time. It
-was **flat**.
+这次的诊断很漂亮，因为这一次奖励并没有*错*。它是**平的**。
 
-`gait_phase` compares a **binary** contact flag against the schedule:
+`gait_phase` 把一个**二值**接触标志与时间表进行比较：
 
 $$
 r = \tfrac14 \sum_i \big[ c_i d_i + (1-c_i)(1-d_i) \big]
 $$
 
-$c_i$ is 1 or 0. Nothing in between. Measured on the standing robot, the foot
-geoms sit at 9.5 mm. Raising a foot from 9.5 mm to 9.4 mm changes $c_i$ not at
-all, so it changes the reward not at all. The gradient is **exactly zero** all
-the way up to a discontinuity — and that discontinuity is precisely the barrier a
-policy that has never stepped has to cross.
+$c_i$ 要么是 1，要么是 0，没有中间值。在站立的机器人上测量，足端几何体位于 9.5 mm 处。把一只脚从 9.5 mm 稍微抬到 9.6 mm，完全不会改变 $c_i$，因此也完全不会改变奖励。梯度一路上都**恰好为零**，直到遇到一个不连续点——而这个不连续点，恰恰就是一个从未迈过步的策略必须跨越的那道障碍。
 
-| swing foot raised by | `gait_phase` | `feet_clearance` |
+| 摆动足端抬高 | `gait_phase` | `feet_clearance` |
 |---|---|---|
 | 0.0 cm | 0.50 | $-0.00333$ |
 | 0.5 cm | 0.75 | $-0.00278$ |
@@ -251,110 +170,74 @@ policy that has never stepped has to cross.
 | 4.0 cm | 0.75 | $-0.00031$ |
 | 8.0 cm | 0.75 | $\phantom{-}0.00000$ |
 
-The left column is a step function. The right column is smooth, and pulls the
-swing foot upward from the first millimetre.
+左列是一个阶跃函数。右列是光滑的，从第一毫米起就把摆动足端往上拉。
 
-So `gait_phase` and `feet_clearance` do different jobs, and both are needed:
+所以 `gait_phase` 和 `feet_clearance` 承担的是不同的工作，两者缺一不可：
 
-- `feet_clearance` gets the foot **off the ground** — a dense, continuous
-  gradient through the region where nothing else provides one.
-- `gait_phase` gets it off the ground **at the right time** — it is what makes
-  the motion a *gait* rather than four independent legs waving.
-- `feet_air_time` makes the resulting strides **long** rather than a shuffle.
+- `feet_clearance` 让足端**离开地面**——在其他任何项都提供不了梯度的区域里，给出一个稠密、连续的梯度。
+- `gait_phase` 让它**在正确的时间**离开地面——正是它让这种运动成为一种*步态*，而不是四条腿各自乱挥。
+- `feet_air_time` 让由此产生的步幅**更长**，而不是碎步拖行。
 
-This generalises past this repository. **A reward term built on a thresholded
-quantity — a contact flag, a success indicator, a boolean — is piecewise
-constant, and a policy cannot climb a staircase it cannot see the slope of.**
-Whenever a term is defined on a boolean, ask what continuous quantity underlies
-it, and reward that too.
+这一点的适用范围远不止本仓库。**一个建立在阈值化的量——接触标志、成功指示量、布尔值——之上的奖励项是分段常数的，而策略无法爬上一段它看不出坡度的台阶。** 每当一个奖励项定义在布尔值上时，问问自己它背后对应的连续量是什么，并把那个量也一起奖励。
 
-## 10.4c The third stall: a borrowed constant that inverted the sign
+## 10.4c 第三次停滞：一个借来的常数把符号翻转了
 
-Two stalls down, the run still would not step. This time the culprit was
-`feet_air_time`, and it is the most transferable of the three because the bug
-was a **borrowed convention that stopped being true**.
+两次停滞都解决了，训练运行还是不肯迈步。这一次的罪魁祸首是 `feet_air_time`，而它是三者中最具普适性的一个教训，因为这个 bug 是一个**已经不再成立的借来的约定**。
 
-The legged_gym form pays for air time beyond half a second:
+legged_gym 的形式为超过半秒的腾空时间付奖励：
 
 $$
 r = \sum_i \big(t^{\text{air}}_i - 0.5\big)\mathbb{1}[\text{foot } i \text{ just landed}]
 $$
 
-That is sensible where the gait frequency is *emergent* and the resulting
-strides are long. It is wrong the moment frequency becomes a **commanded
-input**. At the commanded 2 Hz with duty 0.5,
+在步态频率是*自发涌现*的、由此产生的步幅也很长的场景里，这是合理的。可一旦频率变成了**指令输入**，它就错了。在指令频率为 2 Hz、占空比为 0.5 时，
 
 $$
 t_{\text{swing}} = \frac{1-\beta}{f} = \frac{0.5}{2} = 0.25\ \text{s}
 $$
 
-so every touchdown scores $(0.25 - 0.5) \times 2.0 = -0.5$. Four feet at two
-touchdowns per second is $-4.0$ per second, or $-0.08$ per control step — against
-a total of $+0.03$ per step for standing perfectly still.
+所以每次触地得分 $(0.25 - 0.5) \times 2.0 = -0.5$。四只脚、每只每秒触地两次，就是每秒 $-4.0$，或者说每个控制步 $-0.08$——而纹丝不动地站着，每步总共能拿 $+0.03$。
 
-**A flawless trot scored roughly four times worse than doing nothing.** The
-policy had not failed to find the gait. It had found it, evaluated it, and
-correctly rejected it.
+**一套完美的小跑，得分大约比什么都不做差四倍。** 策略并不是没找到这个步态。它找到了，评估了它，然后正确地拒绝了它。
 
-The fix credits air time *up to* the scheduled swing duration rather than
-offsetting it by a constant. Three properties follow, all of which the old form
-lacked:
+修复方法是把腾空时间计到计划摆动时长*为止*，而不是减去一个常数偏移。由此得到三个性质，而旧形式一个都不具备：
 
-- **non-negative**, so early imperfect steps are never punished — and those are
-  the only route to good ones;
-- **saturating**, so hanging a foot in the air earns nothing extra and cannot
-  fight the phase schedule;
-- **frequency-independent**, with a maximum rate of $4(1-\beta)$ per second
-  whatever $f$ is, so commanding a faster gait does not inflate the reward.
+- **非负**，因此早期不完美的步子永远不会受到惩罚——而它们是通往好步子的唯一途径；
+- **饱和**，因此把脚悬在空中不会多拿任何东西，也就不会与相位时间表打架；
+- **与频率无关**，无论 $f$ 是多少，最大速率都是每秒 $4(1-\beta)$，因此指令一个更快的步态不会让奖励虚高。
 
-Measured afterwards — scripted trot minus standing, per control step:
-`gait_phase` $+0.0084$, `feet_clearance` $+0.0029$, `feet_air_time` $+0.0006$,
-against `torques` $-0.0022$, `ang_vel_xy` $-0.0015$, `feet_slip` $-0.0009$.
-Stepping now pays about $+0.007$ net *before* any credit for moving, and
-tracking 0.8 m/s adds a further $+0.029$.
+修复之后的实测——脚本化小跑减去站立，按每个控制步计：`gait_phase` $+0.0084$，`feet_clearance` $+0.0029$，`feet_air_time` $+0.0006$，对比 `torques` $-0.0022$，`ang_vel_xy` $-0.0015$，`feet_slip` $-0.0009$。现在，迈步在获得任何移动奖励*之前*就已经净赚约 $+0.007$，而跟踪 0.8 m/s 还能再多拿 $+0.029$。
 
-**The lesson: a borrowed hyperparameter carries the assumptions of the codebase
-it came from.** The 0.5 s constant encodes "strides are long because frequency
-is emergent"; import it into an environment where frequency is commanded and it
-silently inverts the sign of the term for the exact behaviour you want.
+**教训：一个借来的超参数，带着它所来自的那个代码库的假设。** 0.5 s 这个常数编码的是“步幅很长，因为频率是自发涌现的”；把它导入一个频率由指令给定的环境，它就会悄无声息地把这一项在你恰恰想要的那个行为上的符号翻转过来。
 
-And the check that catches it, which is cheap and general: **evaluate your
-reward on a hand-scripted version of the target behaviour, and compare it
-against the trivial policy.** If the thing you want does not out-score doing
-nothing, no algorithm will find it, and you will spend days blaming exploration.
+而能抓住它的检查既便宜又通用：**在一个手写脚本版本的目标行为上评估你的奖励，并把它与平凡策略进行比较。** 如果你想要的东西得分还比不过什么都不做，那么没有任何算法能找到它，而你会花上好几天去责怪探索。
 
-## 10.5 v1's reward, and what it actually optimised
+## 10.5 v1 的奖励，以及它实际优化的是什么
 
-| v1 term | Weight | Verdict |
+| v1 项 | 权重 | 评语 |
 |---|---|---|
-| $2.0 \exp(-(v_x^* - v_x)^2/0.25)$ | 2.0 | world frame (B2); ignores $v_y^*$ (B3) |
-| $0.5 \exp(-(\omega_z^* - \omega_z)^2/0.25)$ | 0.5 | world frame |
-| alive | 0.5 | **too large** |
-| $-0.5\lvert v_y \rvert$ | | punishes strafing unconditionally (B3) |
-| $-1.0\Vert g_{xy}\Vert ^2$ | | correct |
-| $-0.01\Vert a - a^-\Vert ^2$ | | correct |
-| $-10^{-4}\sum\tau^2$ | | correct |
-| $+0.1\lvert c_{FL}c_{RR} - c_{FR}c_{RL}\rvert$ | | **broken** (§10.6) |
+| $2.0 \exp(-(v_x^* - v_x)^2/0.25)$ | 2.0 | 世界坐标系（B2）；忽略了 $v_y^*$（B3） |
+| $0.5 \exp(-(\omega_z^* - \omega_z)^2/0.25)$ | 0.5 | 世界坐标系 |
+| alive | 0.5 | **过大** |
+| $-0.5\lvert v_y \rvert$ | | 无条件惩罚侧向平移（B3） |
+| $-1.0\Vert g_{xy}\Vert ^2$ | | 正确 |
+| $-0.01\Vert a - a^-\Vert ^2$ | | 正确 |
+| $-10^{-4}\sum\tau^2$ | | 正确 |
+| $+0.1\lvert c_{FL}c_{RR} - c_{FR}c_{RL}\rvert$ | | **有问题**（§10.6） |
 
-Add up what a **motionless upright** v1 robot collected per step:
+把一台**静止直立**的 v1 机器人每步拿到的奖励加起来：
 
 $$
 \underbrace{2.0 \times 0.37}_{\text{tracking } (e = 0.5)} + \underbrace{0.5 \times 1.0}_{\text{yaw, } \omega = 0} + \underbrace{0.5}_{\text{alive}} + \underbrace{0.1 \times 1.0}_{\text{gait, standing on one diagonal}} = 1.84
 $$
 
-against a theoretical maximum of $2.0 + 0.5 + 0.5 + 0.1 = 3.1$. **59% of the
-maximum reward, for standing still, with zero risk of the penalties that walking
-incurs.**
+而理论最大值是 $2.0 + 0.5 + 0.5 + 0.1 = 3.1$。**靠站着不动就拿到了最大奖励的 59%，而且完全没有行走会招致的那些惩罚风险。**
 
-v1's own `logs/algorithm_comparison.md` records the consequence without
-identifying it: TD3 scored the *highest* mean reward (259) while achieving the
-*lowest* forward speed (0.012 m/s). It had found the standing optimum and the
-reward function agreed it was the best available policy. That table is a
-measurement of the reward function, not of TD3.
+v1 自己的 `logs/algorithm_comparison.md` 记录下了这一后果，却没有认出它来：TD3 拿到了*最高*的平均奖励（259），同时取得了*最低*的前进速度（0.012 m/s）。它找到了站立最优解，而奖励函数也认可这是可得的最好策略。那张表衡量的是奖励函数，而不是 TD3。
 
-## 10.6 The gait reward that a statue maximised
+## 10.6 被一尊雕像最大化的步态奖励
 
-v1's eighth term:
+v1 的第八项：
 
 ```python
 def _gait_reward(self):
@@ -364,25 +247,17 @@ def _gait_reward(self):
     return abs(diag1 - diag2)
 ```
 
-Intent: reward a trot, in which diagonal pairs alternate.
+意图：奖励小跑，在小跑中两对对角腿交替着地。
 
-What it does: returns 1.0 whenever exactly one diagonal pair is in contact.
+实际行为：只要恰好有一对对角腿处于接触状态，就返回 1.0。
 
-Consider a robot standing motionless on FL and RR, feet planted, not moving at
-all, forever. $\text{diag1} = 1$, $\text{diag2} = 0$, reward $= |1 - 0| = 1.0$.
-**The maximum. Every step. Forever.**
+设想一台机器人纹丝不动地站在 FL 和 RR 上，双脚踩实，完全不动，永远如此。$\text{diag1} = 1$，$\text{diag2} = 0$，奖励 $= |1 - 0| = 1.0$。**最大值。每一步。永远。**
 
-The expression has **no time dependence whatsoever**. It cannot distinguish
-alternation from a frozen asymmetric stance, because it only ever sees one
-instant. "Alternating" is a statement about a sequence, and no function of a
-single contact vector can express it.
+这个表达式**完全不依赖于时间**。它无法区分交替与一个冻结的不对称站姿，因为它永远只看到一个瞬间。“交替”是关于一个序列的陈述，而任何单个接触向量的函数都无法表达它。
 
-This is the textbook shape of a reward-hacking bug, and it is instructive that
-the fix is not a cleverer contact expression. No function of $\mathbf{c}$ alone
-will do. You need a **reference the contact can be compared against** — a clock.
-That is chapter 11.
+这是奖励投机（reward hacking）bug 的教科书式形态，而有启发性的是，修复方法并不是一个更聪明的接触表达式。任何只关于 $\mathbf{c}$ 的函数都做不到。你需要一个**可以让接触与之比较的参照**——一个时钟。那就是第 11 章的内容。
 
-Pinned as a test, so the point survives:
+把它钉成一个测试，好让这一点留存下来：
 
 ```python
 def test_v1_gait_reward_was_maximised_by_standing_still():
@@ -393,64 +268,43 @@ def test_v1_gait_reward_was_maximised_by_standing_still():
     assert np.mean(scores) == pytest.approx(0.5, abs=0.05)
 ```
 
-## 10.7 Reward hacking, generally
+## 10.7 奖励投机的一般规律
 
-Every exploit in this repository fits one of three patterns.
+本仓库中的每一次漏洞利用，都符合以下三种模式之一。
 
-**A reward for a proxy rather than the thing.** The gait reward proxied
-"alternation" with "asymmetry". Asymmetry is cheaper than alternation, so
-asymmetry is what you get.
+**奖励的是代理指标，而不是事物本身。** 步态奖励用“不对称”来代理“交替”。不对称比交替更便宜，所以你得到的就是不对称。
 
-**A reward whose trivial solution is nearly as good as the real one.** The
-standing optimum. Whenever the do-nothing policy scores most of the maximum,
-expect the do-nothing policy.
+**平凡解几乎和真正的解一样好的奖励。** 站立最优解就是如此。每当什么都不做的策略能拿到最大值的大部分，就等着得到一个什么都不做的策略吧。
 
-**A penalty that conflicts with a command.** v1 penalised all lateral velocity
-while (nominally) accepting a lateral velocity command. The policy cannot
-satisfy both, so it satisfies the one with the larger weight and the command
-becomes decorative.
+**与指令相冲突的惩罚项。** v1 惩罚所有侧向速度，同时（名义上）又接受侧向速度指令。策略无法同时满足两者，于是它满足权重更大的那一个，指令就沦为了摆设。
 
-Four defences, all cheap:
+四道防线，全都很便宜：
 
-1. **Compute the do-nothing baseline analytically** before training.
-2. **Log every term separately.** This is what `RewardTermLoggerCallback` is for.
-   The 524k-step failure was diagnosable in thirty seconds because
-   `rew/feet_air_time` was plotted on its own; in v1's aggregate reward it would
-   have been invisible.
-3. **Unit-test each term's sign and bounds** at a hand-constructed state.
-4. **Watch the robot.** A reward of 40 tells you nothing about whether the gait
-   looks like a gait. `scripts/play.py` exists partly for this.
+1. **在训练之前，解析地算出“什么都不做”的基线。**
+2. **把每一项分别记录下来。** 这正是 `RewardTermLoggerCallback` 的用途。那次 524k 步的失败之所以能在三十秒内诊断出来，是因为 `rew/feet_air_time` 是单独绘制的；在 v1 的汇总奖励里，它根本看不出来。
+3. **在手工构造的状态下，对每一项的符号和边界做单元测试。**
+4. **亲眼看着机器人。** 奖励是 40，并不能告诉你这个步态看起来像不像步态。`scripts/play.py` 存在的部分原因就在于此。
 
-## 10.8 Tuning, in order
+## 10.8 调参，按顺序来
 
-If you are changing weights, change them in this order.
+如果你要改权重，就按这个顺序改。
 
-1. **Get it to survive.** Termination penalties, `orientation`, `base_height`.
-   Until episodes last more than a couple of seconds, nothing else matters.
-2. **Get it to step.** `gait_phase`. Watch `rew/feet_air_time` become non-zero —
-   that is the signal that the robot has genuinely left the ground.
-3. **Get it to track.** `track_lin_vel_xy`, `track_ang_vel_yaw`, and the
-   curriculum. Watch `diagnostics/tracking_lin_err`.
-4. **Make it look right.** `action_rate`, `joint_acceleration`, `feet_slip`,
-   `torques`. These cost performance and buy realism; tune them last, and only
-   as far as you need.
+1. **先让它活下来。** 终止惩罚项、`orientation`、`base_height`。在回合能持续超过几秒钟之前，其他一切都无关紧要。
+2. **让它迈步。** `gait_phase`。盯着 `rew/feet_air_time` 变成非零——这是机器人真正离开了地面的信号。
+3. **让它跟踪。** `track_lin_vel_xy`、`track_ang_vel_yaw` 以及课程。盯着 `diagnostics/tracking_lin_err`。
+4. **让它看起来对劲。** `action_rate`、`joint_acceleration`、`feet_slip`、`torques`。这些项会牺牲性能、换来真实感；最后再调它们，而且只调到够用为止。
 
-Change one weight at a time, by a factor of two or three, not by 10%. RL runs
-are noisy enough that a 10% change is unmeasurable without many seeds.
+一次只改一个权重，按两到三倍去改，而不是改 10%。强化学习的训练运行噪声很大，不用很多个随机种子，10% 的变化根本测不出来。
 
-## 10.9 Summary
+## 10.9 小结
 
-The reward is where the domain knowledge lives. PPO is off-the-shelf; the
-sixteen terms above are the actual engineering.
+奖励是领域知识的栖身之处。PPO 是现成的；上面这十六项才是真正的工程。
 
-Two numbers are worth computing before every run, and neither requires training
-anything:
+有两个数值得在每次训练运行之前算一算，而且两者都不需要训练任何东西：
 
-- What does a **do-nothing** policy score? (If it is most of the maximum, stop.)
-- What does a **perfect** policy score? (If your terms cannot sum to much more
-  than the do-nothing baseline, stop.)
+- 一个**什么都不做**的策略能拿多少分？（如果它占了最大值的大部分，停下。）
+- 一个**完美**的策略能拿多少分？（如果你的各项加起来不能比“什么都不做”的基线高出很多，停下。）
 
 ---
 
-**Previous:** [9. Observations and actions](09-observations-and-actions.md) ·
-**Next:** [11. Gaits, phase, and periodic control](11-gaits-and-phase.md)
+**上一章：** [9. 观测与动作](09-observations-and-actions.md) · **下一章：** [11. 步态、相位与周期控制](11-gaits-and-phase.md)

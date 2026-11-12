@@ -1,13 +1,10 @@
-# 6. PPO line by line
+# 6. 逐行解读 PPO
 
-This chapter walks `ppo_from_scratch/ppo.py` from top to bottom, mapping each
-block to the equations of chapters 4 and 5. Have the file open beside this.
+本章从头到尾走读 `ppo_from_scratch/ppo.py`，把每一段代码对应到第 4 章和第 5 章的公式上。阅读时请把这个文件打开放在旁边。
 
-The file is about 450 lines. Roughly 120 of those are the algorithm; the rest is
-the machinery that every real implementation needs and no paper mentions. The
-gap between those two numbers is the point of this chapter.
+这个文件大约 450 行。其中大约 120 行是算法本身；其余的都是每个真实实现都离不开、却没有任何论文提及的配套机制。这两个数字之间的差距，正是本章的要点。
 
-## 6.1 `RunningMeanStd` — observation normalisation
+## 6.1 `RunningMeanStd` —— 观测归一化
 
 ```python
 class RunningMeanStd:
@@ -16,17 +13,11 @@ class RunningMeanStd:
         return np.clip((x - self.mean) / np.sqrt(self.var + 1e-8), -clip, clip)
 ```
 
-Not in any PPO paper. Absolutely required in practice.
+任何一篇 PPO 论文里都没有它。但在实践中它绝对必不可少。
 
-The observation mixes quantities on wildly different scales: joint angles are
-$O(1)$ rad, joint velocities reach 20 rad/s, the gait clock lives in $[-1,1]$.
-The first linear layer applies one weight matrix to all of them. Without
-normalisation, the velocity block dominates the layer's output, and early
-training is spent learning to down-weight it — capacity and gradient steps spent
-on a problem you could have removed with three lines of arithmetic.
+观测中混杂着尺度相差悬殊的各种量：关节角度是 $O(1)$ rad 量级，关节速度可达 20 rad/s，步态时钟则落在 $[-1,1]$ 之间。第一个线性层用同一个权重矩阵作用于所有这些量。如果不做归一化，速度那一块就会主导该层的输出，训练早期便被耗费在学习如何压低它的权重上——网络容量和梯度步数都花在了一个本可以用三行算术就消除的问题上。
 
-The update rule is Chan's parallel variance algorithm, which merges two sets of
-(count, mean, variance) statistics without revisiting the data:
+更新规则采用 Chan 的并行方差算法，它无需重新遍历数据，就能合并两组（计数、均值、方差）统计量：
 
 $$
 \begin{aligned}
@@ -37,20 +28,14 @@ M_2 &= \sigma_A^2 n_A + \sigma_B^2 n_B + \Delta^2 \frac{n_A n_B}{n_A + n_B} \\
 \end{aligned}
 $$
 
-The naive alternative — accumulating $\sum x$ and $\sum x^2$ — loses catastrophic
-precision when the mean is large relative to the variance, which is exactly the
-regime for joint angles clustered around $-1.8$ rad.
+朴素的替代方案——累加 $\sum x$ 和 $\sum x^2$——在均值相对于方差很大时会出现灾难性的精度损失，而关节角度聚集在 $-1.8$ rad 附近，恰恰就处于这种情形。
 
-Two operational points, both of which have bitten this repository:
+有两点操作上的注意事项，本仓库在这两点上都栽过跟头：
 
-- **The statistics are part of the model.** A policy trained on normalised
-  observations is meaningless when fed raw ones. `save()` writes them alongside
-  the weights, deliberately. Bug B12 (chapter 14) is what happens when they get
-  separated.
-- **Freeze at evaluation.** `_normalize(..., update=False)` for the terminal
-  observation, so that evaluation does not shift the statistics.
+- **统计量是模型的一部分。** 一个用归一化观测训练出来的策略，喂给它原始观测就毫无意义。`save()` 有意把它们和权重一起保存。Bug B12（第 14 章）展示的就是两者被分开时会发生什么。
+- **评估时冻结。** 对终止观测使用 `_normalize(..., update=False)`，这样评估就不会改变统计量。
 
-## 6.2 `ActorCritic` — the networks
+## 6.2 `ActorCritic` —— 网络
 
 ```python
 self.actor  = orthogonal_init(mlp([obs_dim, *hidden, act_dim]))
@@ -59,35 +44,15 @@ self.critic = orthogonal_init(mlp([obs_dim, *hidden, 1]))
 self.log_std = nn.Parameter(torch.full((act_dim,), log_std_init))
 ```
 
-**Separate trunks.** The two networks share no parameters. Sharing is common in
-Atari work, where both heads need the same visual features, and a bad idea here:
-the critic must model the return of a stochastic, externally-pushed robot — it
-needs features encoding "how likely am I to fall" — while the actor needs a
-smooth control law. Forcing one representation to serve both makes the value
-loss and the policy loss fight over the shared layers, mediated only by
-$c_v$.
+**各自独立的主干网络。** 两个网络不共享任何参数。共享在 Atari 相关工作中很常见，因为那里两个头需要相同的视觉特征；但在这里这是个坏主意：critic 必须为一个随机的、会受外力推扰的机器人的回报建模——它需要能编码“我有多大可能摔倒”的特征——而 actor 需要的是一条平滑的控制律。强迫同一个表示同时服务于两者，会让价值损失和策略损失在共享层上互相争夺，而居中调停的只有 $c_v$。
 
-**ELU, not ReLU or tanh.** ELU is smooth at zero and does not have ReLU's dead
-units. For a controller producing continuous joint targets, the smoothness
-matters: a ReLU network's output is piecewise linear with kinks, and those kinks
-show up as small discontinuities in the commanded joint trajectory. This is
-mostly aesthetic in simulation and mostly not on hardware.
+**用 ELU，而不是 ReLU 或 tanh。** ELU 在零点处是平滑的，也没有 ReLU 的死神经元问题。对于一个输出连续关节目标的控制器，平滑性很重要：ReLU 网络的输出是带折点的分段线性函数，这些折点会表现为指令关节轨迹中的微小不连续。这在仿真中基本只是观感问题，到了硬件上则基本不是。
 
-**Orthogonal initialisation.** An orthogonal matrix preserves the norm of its
-input, so activations neither blow up nor vanish through a deep stack at
-initialisation. The gain $\sqrt 2$ compensates for the expected halving of
-variance through a ReLU-family nonlinearity.
+**正交初始化。** 正交矩阵保持输入的范数不变，因此在初始化时，激活值穿过深层堆叠既不会爆炸也不会消失。增益 $\sqrt 2$ 用来补偿经过 ReLU 族非线性后方差预期会减半的效应。
 
-**Gain 0.01 on the actor's output layer.** This one is genuinely important and
-often skipped. It makes the initial policy output near-zero, i.e. *the nominal
-standing pose*. Combined with `log_std_init = -1.0` ($\sigma \approx 0.37$), the
-robot begins by standing and jittering slightly, rather than by slamming all
-twelve joints to their limits. An agent that falls in the first three control
-steps of every episode collects no information about walking.
+**actor 输出层的增益取 0.01。** 这一条确实很重要，却常被略过。它让初始策略的输出接近零，也就是*名义站立姿态*。再结合 `log_std_init = -1.0`（$\sigma \approx 0.37$），机器人一开始是站着并轻微抖动，而不是把全部十二个关节猛地打到极限。一个在每个回合的前三个控制步就摔倒的智能体，收集不到任何关于行走的信息。
 
-**`log_std` is a free parameter**, not a network output. Chapter 1, §1.3
-explains why: a state-dependent std can shrink its own exploration precisely in
-the difficult states.
+**`log_std` 是一个自由参数**，而不是网络的输出。第 1 章 §1.3 解释了原因：依赖于状态的标准差可能恰恰在困难状态下缩小自身的探索。
 
 ### `evaluate`
 
@@ -97,37 +62,28 @@ def evaluate(self, obs, actions):
     return dist.log_prob(actions).sum(-1), dist.entropy().sum(-1), self.value(obs)
 ```
 
-This re-scores **stored** actions under the **current** policy. It is the heart
-of the whole thing: the actions came from $\pi_{\theta_\text{old}}$, and Eq 5.2
-needs $\log \pi_\theta(a_t \mid s_t)$ for those same actions to build the ratio.
+它在**当前**策略下给**已存储**的动作重新打分。这是整个算法的核心：这些动作来自 $\pi_{\theta_\text{old}}$，而式 5.2 需要这些相同动作的 $\log \pi_\theta(a_t \mid s_t)$ 来构造比率。
 
-`.sum(-1)` because the policy is a diagonal Gaussian: independent components, so
-the joint density is a product and its log is a sum. Forgetting this sum is a
-classic bug — the ratio then reflects one joint instead of the whole action.
+之所以要 `.sum(-1)`，是因为策略是对角高斯分布：各分量相互独立，所以联合密度是乘积，其对数是求和。忘了这个求和是一个经典 bug——此时比率反映的只是一个关节，而不是整个动作。
 
-## 6.3 `RolloutBuffer` — storage and GAE
+## 6.3 `RolloutBuffer` —— 存储与 GAE
 
-Shapes are `(n_steps, n_envs, ...)`. Everything is discarded after the update;
-that is what on-policy means.
+形状是 `(n_steps, n_envs, ...)`。每次更新之后，所有数据都会被丢弃；这就是同策略（on-policy）的含义。
 
-### The `dones` convention
+### `dones` 约定
 
 ```python
 self.dones[i] = self._last_done
 ```
 
-Note the buffer stores the done flag of the *previous* step alongside the
-current observation. So `dones[t]` answers "is `obs[t]` the first state of a
-fresh episode?", and therefore `dones[t+1]` answers "did the episode end at step
-`t`?". This is the CleanRL convention and it makes the GAE loop read cleanly:
+注意，缓冲区把*上一步*的 done 标志和当前观测存放在一起。所以 `dones[t]` 回答的是“`obs[t]` 是不是一个新回合的第一个状态？”，因而 `dones[t+1]` 回答的是“回合是否在第 `t` 步结束？”。这是 CleanRL 的约定，它让 GAE 循环读起来很清爽：
 
 ```python
 next_non_terminal = 1.0 - self.dones[t + 1]
 next_value        = self.values[t + 1]
 ```
 
-It is also an easy off-by-one to get wrong, and getting it wrong produces a
-model that trains, converges, and is subtly worse — with no error anywhere.
+这也是一个很容易写错的差一（off-by-one）问题，而写错的后果是得到一个能训练、能收敛、却微妙地更差的模型——而且任何地方都不会报错。
 
 ### `compute_returns`
 
@@ -143,17 +99,11 @@ for t in reversed(range(self.n_steps)):
 returns = advantages + self.values                # Eq 4.8
 ```
 
-Six lines for the whole of chapter 4. Three things to notice:
+六行代码就涵盖了整个第 4 章。有三点值得注意：
 
-1. **Backwards.** $\hat A_t$ depends on $\hat A_{t+1}$, seeded by the value of
-   the state the rollout stopped at.
-2. **The truncation bootstrap is folded into the reward** before the loop. This
-   is the cleanest place to put it: it makes the loop itself unaware of the
-   distinction, which is what you want, since the distinction is about the
-   *reward*, not about the recursion.
-3. **`returns` is the $\lambda$-return, not the Monte-Carlo return.** Fitting the
-   critic to this rather than to $G_t$ is what keeps the critic's targets
-   low-variance.
+1. **倒序计算。** $\hat A_t$ 依赖于 $\hat A_{t+1}$，递推的起点是 rollout 停止处那个状态的价值。
+2. **截断自举在循环之前就被折叠进了奖励。** 这是放置它最干净的地方：它让循环本身对这种区别毫无感知，而这正是你想要的，因为这种区别关乎的是*奖励*，而不是递推。
+3. **`returns` 是 $\lambda$-回报，而不是蒙特卡洛回报。** 让 critic 拟合它而不是 $G_t$，正是 critic 的目标得以保持低方差的原因。
 
 ## 6.4 `collect_rollout`
 
@@ -163,17 +113,11 @@ next_obs, rewards, dones, infos = self.env.step(clipped)
 self.buffer.add(self._last_obs, action_np, log_prob.cpu().numpy(), ...)
 ```
 
-**Store the unclipped action, send the clipped one.** The Gaussian is unbounded;
-the action space is $[-1,1]^{12}$. If you stored the *clipped* action, then in
-the update `evaluate()` would compute $\log \pi_\theta(\text{clipped})$, which
-does not match the stored $\log \pi_{\theta_\text{old}}(\text{unclipped})$, and
-the ratio in Eq 5.2 would be systematically wrong for every saturated dimension.
+**存储未裁剪的动作，发送裁剪后的动作。** 高斯分布是无界的；动作空间是 $[-1,1]^{12}$。如果你存储的是*裁剪后*的动作，那么更新时 `evaluate()` 计算的是 $\log \pi_\theta(\text{clipped})$，它与存储的 $\log \pi_{\theta_\text{old}}(\text{unclipped})$ 对不上，于是在每一个饱和的维度上，式 5.2 中的比率都会系统性地出错。
 
-Since `log_std_init = -1.0` and the policy operates near zero, saturation is
-rare early on — which is precisely why this bug is hard to notice. It only bites
-once the policy is confident, at which point training mysteriously destabilises.
+由于 `log_std_init = -1.0` 且策略在零附近工作，早期很少出现饱和——这正是这个 bug 难以察觉的原因。它只在策略变得自信之后才会发作，到那时训练会莫名其妙地变得不稳定。
 
-### Truncation handling
+### 截断处理
 
 ```python
 for i, info in enumerate(infos):
@@ -183,13 +127,9 @@ for i, info in enumerate(infos):
         truncated_values[i] = float(self.policy.value(...).item())
 ```
 
-SB3's vectorised wrappers auto-reset on `done` and stash the true final
-observation in `info["terminal_observation"]`. Without that, `next_obs` is
-already the *reset* observation and $V(s_T)$ would be evaluated at the wrong
-state. `update=False` so a handful of terminal observations do not skew the
-running statistics.
+SB3 的向量化包装器在 `done` 时会自动重置，并把真正的最终观测暂存在 `info["terminal_observation"]` 中。没有它的话，`next_obs` 已经是*重置后*的观测，$V(s_T)$ 就会在错误的状态上求值。使用 `update=False`，是为了不让少量终止观测扭曲滑动统计量。
 
-## 6.5 `update` — the objective
+## 6.5 `update` —— 目标函数
 
 ```python
 ratio = torch.exp(log_prob - mb["log_probs"])                        # Eq 5.2
@@ -202,9 +142,9 @@ surrogate_2  = torch.clamp(ratio, 1 - clip, 1 + clip) * adv
 policy_loss  = -torch.min(surrogate_1, surrogate_2).mean()           # Eq 5.6
 ```
 
-Four lines. That is PPO.
+四行代码。这就是 PPO。
 
-The `-` is because PyTorch minimises: we want to maximise $L^{\text{CLIP}}$.
+那个 `-` 号是因为 PyTorch 做的是最小化，而我们想要最大化 $L^{\text{CLIP}}$。
 
 ```python
 value_clipped = mb["values"] + torch.clamp(value - mb["values"], -clip_vf, clip_vf)
@@ -212,31 +152,23 @@ value_loss = torch.max((value - mb["returns"]) ** 2,
                        (value_clipped - mb["returns"]) ** 2).mean()  # Eq 5.8
 ```
 
-`max` here versus `min` above: for the policy we take the pessimistic
-(smaller) *objective*, for the value we take the pessimistic (larger) *loss*.
-Both are the conservative choice; the sign flips because one is being maximised
-and the other minimised.
+这里用 `max`，上面用 `min`：对策略，我们取悲观的（更小的）*目标*；对价值，我们取悲观的（更大的）*损失*。两者都是保守的选择；符号之所以相反，是因为一个在被最大化，另一个在被最小化。
 
 ```python
 loss = policy_loss + vf_coef * value_loss + ent_coef * entropy_loss   # Eq 5.7
 ```
 
-with `entropy_loss = -entropy.mean()`, so adding it with a positive coefficient
-*maximises* entropy.
+其中 `entropy_loss = -entropy.mean()`，所以以正系数加上它，就是在*最大化*熵。
 
-### Gradient clipping
+### 梯度裁剪
 
 ```python
 nn.utils.clip_grad_norm_(self.policy.parameters(), self.cfg.max_grad_norm)
 ```
 
-Distinct from the PPO clip and doing a different job. PPO's clip bounds how far
-the *policy distribution* moves. Nothing in Eq 5.7 bounds the *gradient
-magnitude* — a minibatch where the advantage standardisation divides by a tiny
-std can produce an enormous gradient and undo an entire rollout's progress.
-Clipping by global norm is the cheap insurance.
+它与 PPO 的裁剪是两回事，承担的也是不同的职责。PPO 的裁剪限制的是*策略分布*能移动多远。而式 5.7 中没有任何东西限制*梯度的大小*——如果某个小批量在做优势标准化时除以了一个极小的标准差，就可能产生巨大的梯度，把整个 rollout 带来的进展一笔勾销。按全局范数裁剪是一份廉价的保险。
 
-### Approximate KL and early stop
+### 近似 KL 与提前停止
 
 ```python
 log_ratio = log_prob - mb["log_probs"]
@@ -246,14 +178,11 @@ if approx_kl > 1.5 * self.cfg.target_kl:
     break
 ```
 
-Note this is inside `torch.no_grad()` — it is a diagnostic, not part of the
-objective.
+注意这段代码位于 `torch.no_grad()` 之内——它是一个诊断量，而不是目标函数的一部分。
 
-The `1.5` multiplier is SB3's convention and is arbitrary but sensible: it lets
-a single noisy minibatch through without abandoning the update, while stopping
-a genuine drift.
+`1.5` 这个倍数是 SB3 的约定，虽然随意但合理：它允许单个噪声较大的小批量通过而不至于放弃整次更新，同时又能拦住真正的漂移。
 
-### Explained variance
+### 解释方差
 
 ```python
 out["explained_variance"] = 1 - np.var(y_true - y_pred) / np.var(y_true)
@@ -264,13 +193,11 @@ $$
 \tag{6.1}
 $$
 
-1.0 means the critic explains the return perfectly. 0.0 means it is no better
-than predicting the mean. **Negative** means it is worse than predicting the
-mean, which is a real and common state early in training.
+1.0 表示 critic 完美地解释了回报。0.0 表示它并不比直接预测均值更好。**负值**表示它比预测均值还差，这在训练早期是一种真实存在且很常见的状态。
 
-This is the most diagnostic single number in a PPO run. Chapter 13 explains why.
+这是一次 PPO 训练运行中最具诊断价值的单个数字。第 13 章会解释原因。
 
-## 6.6 `learn` — the loop
+## 6.6 `learn` —— 主循环
 
 ```python
 for update in range(1, n_updates + 1):
@@ -283,28 +210,24 @@ for update in range(1, n_updates + 1):
     stats = self.update(advantages, returns)
 ```
 
-Linear learning-rate annealing to zero. Late in training the advantages carry
-less signal (the policy is near a local optimum, so $A \approx 0$ plus noise)
-and a constant learning rate keeps injecting that noise into the weights. The
-schedule is not a nicety; on this task it visibly reduces the late-training
-wobble in episode return.
+学习率线性退火到零。训练后期，优势携带的信号更少（策略已接近局部最优，所以 $A \approx 0$ 再加上噪声），而恒定的学习率会不断把这些噪声注入权重。这个调度并非锦上添花；在这个任务上，它明显减小了训练后期回合回报的抖动。
 
-## 6.7 What is *not* here
+## 6.7 这里*没有*什么
 
-Honest accounting of what a production implementation adds:
+如实列出生产级实现还会额外加入的东西：
 
-| Feature | Why it is omitted |
+| 特性 | 为何省略 |
 |---|---|
-| Recurrent policies | The observation is Markov enough; adds substantial complexity |
-| Reward normalisation | SB3's `VecNormalize` does it; here the reward is already $O(0.5)$ by design (chapter 10) |
-| Multiple optimisers | One Adam over all parameters is simpler and works |
-| Distributed rollout workers | `SubprocVecEnv` is borrowed from SB3; process management is not the algorithm |
-| Learning-rate schedules beyond linear | Diminishing returns |
-| KL-penalty PPO variant | The clipped variant is what everyone uses |
+| 循环（recurrent）策略 | 观测已经足够马尔可夫；而且会增加大量复杂度 |
+| 奖励归一化 | SB3 的 `VecNormalize` 会做这件事；这里的奖励在设计上就已经是 $O(0.5)$ 量级（第 10 章） |
+| 多个优化器 | 用一个 Adam 优化全部参数更简单，也管用 |
+| 分布式 rollout 工作进程 | `SubprocVecEnv` 借自 SB3；进程管理不是算法本身 |
+| 线性以外的学习率调度 | 收益递减 |
+| KL 惩罚版 PPO 变体 | 大家用的都是裁剪版 |
 
-## 6.8 Verifying it
+## 6.8 验证
 
-The test that matters is parity with SB3:
+真正重要的测试是与 SB3 结果一致：
 
 ```bash
 python scripts/train.py --n-envs 8 --timesteps 500000 --run-name sb3_ref --seed 0
@@ -312,17 +235,10 @@ python ppo_from_scratch/train_scratch.py --n-envs 8 --timesteps 500000 --run-nam
 tensorboard --logdir logs/tensorboard
 ```
 
-`rollout/ep_rew_mean` should track between the two within seed noise. On a short
-smoke run (24k steps, 4 envs), the two implementations produce episode returns
-of 36–39 at the same point in training, which is the expected agreement.
+两者的 `rollout/ep_rew_mean` 应当在随机种子带来的噪声范围内彼此吻合。在一次简短的冒烟测试（24k 步，4 个环境）中，两种实现在训练的同一时刻得到的回合回报都在 36–39 之间，这正是预期的吻合程度。
 
-They will not be bit-identical, and chasing that is not worth it: SB3 differs in
-its initialisation details, its handling of the final partial minibatch, and its
-observation-normalisation warm-up. What matters is that the *curves* agree. If
-they do not, the difference is a specific implementation detail, and finding it
-teaches more about PPO than re-reading the paper.
+它们不会逐位一致，追求这一点也不值得：SB3 在初始化细节、对最后一个不完整小批量的处理，以及观测归一化的预热上都有所不同。重要的是*曲线*吻合。如果不吻合，差异就出在某个具体的实现细节上，而把它找出来，比重读论文更能让你学懂 PPO。
 
 ---
 
-**Previous:** [5. From TRPO to PPO](05-trpo-to-ppo.md) ·
-**Next:** [7. Why PPO and not SAC or TD3](07-why-not-sac-td3.md)
+**上一章：** [5. 从 TRPO 到 PPO](05-trpo-to-ppo.md) · **下一章：** [7. 为什么选 PPO 而不是 SAC 或 TD3](07-why-not-sac-td3.md)

@@ -1,31 +1,20 @@
-# 14. The debugging log
+# 14. 调试日志
 
-Twenty-two defects, with the reasoning that found each one and the evidence
-that confirmed it. Sixteen were in the v1 environment and training script; the
-last six (B17-B22) were found in v2 and are included because they were found the
-same way and illustrate the method better than anything else here.
+二十二个缺陷，连同找到每一个缺陷的推理过程，以及证实它的证据。其中十六个出在 v1 的环境和训练脚本里；最后六个（B17-B22）是在 v2 中发现的，之所以收录进来，是因为它们的发现方式相同，而且比本章其他任何内容都更能说明方法。
 
-This is the most useful chapter in the book, for a reason that is worth stating
-plainly: **none of these bugs produced an error message.** v1 trained. It
-converged. It produced a robot that walked at 0.74 m/s, five documented
-training runs, a GIF, and a README with sim-to-real recommendations. Every bug
-below survived all of that.
+这是全书最有用的一章，原因值得直白地说出来：**这些 bug 没有一个产生过错误信息。** v1 能训练，能收敛。它产出了一台以 0.74 m/s 行走的机器人、五次有记录的训练运行、一张 GIF，以及一份附带仿真到现实（sim-to-real）建议的 README。下面的每一个 bug 都挺过了这一切。
 
-The chapter is organised by impact. Each entry gives the symptom, the evidence,
-the fix, and — where it generalises — the lesson.
+本章按影响大小组织。每个条目给出症状、证据、修复，以及——在能够推而广之的地方——教训。
 
-A note on method. The bugs were not found by reading the code top to bottom.
-They were found by asking, of each design decision, *what would have to be true
-for this to be right?* and then checking. That question is what turns a code
-review into a measurement.
+关于方法，先说一句。这些 bug 不是靠从头到尾通读代码找到的。它们是这样找到的：针对每一个设计决策追问，*要让它是对的，必须有什么成立？* 然后去核实。正是这个问题，把一次代码审查变成了一次测量。
 
 ---
 
-## B1 — The nominal pose was not a pose the robot can hold
+## B1 —— 名义姿态不是机器人能保持住的姿态
 
-**Severity: this is the one that defined v1's ceiling.**
+**严重程度：正是这个缺陷决定了 v1 的上限。**
 
-### The code
+### 代码
 
 ```python
 mujoco.mj_resetData(self.model, self.data)
@@ -33,21 +22,17 @@ mujoco.mj_forward(self.model, self.data)
 self.default_joint_pos = self.data.qpos[7:].copy()
 ```
 
-`mj_resetData` sets `qpos = model.qpos0`. For the Menagerie Go2, `qpos0` has all
-twelve joints at exactly 0 rad.
+`mj_resetData` 会设置 `qpos = model.qpos0`。对于 Menagerie 的 Go2，`qpos0` 中十二个关节全都恰好是 0 rad。
 
-The model also ships a `home` keyframe — the actual standing pose — which was
-never loaded:
+模型还自带一个 `home` 关键帧——真正的站立姿态——但它从未被加载过：
 
 ```xml
 <key name="home" qpos="0 0 0.27  1 0 0 0   0 0.9 -1.8   0 0.9 -1.8   0 0.9 -1.8   0 0.9 -1.8"/>
 ```
 
-### The evidence
+### 证据
 
-Every control step, v1 computed `target_pos = default_joint_pos + action * 0.5`,
-so the PD controller's reachable target set per joint was $[-0.5, +0.5]$ rad.
-Checking that against the model's own joint limits:
+每个控制步，v1 都计算 `target_pos = default_joint_pos + action * 0.5`，因此 PD 控制器在每个关节上可达的目标集合是 $[-0.5, +0.5]$ rad。拿它和模型自己的关节限位对照一下：
 
 ```
 FL_hip_joint     qpos0=+0.000 limits=[-1.047,+1.047] OK
@@ -58,23 +43,15 @@ RL_calf_joint    qpos0=+0.000 limits=[-2.723,-0.838] *** OUTSIDE LIMITS ***
 RR_calf_joint    qpos0=+0.000 limits=[-2.723,-0.838] *** OUTSIDE LIMITS ***
 ```
 
-Two facts follow, and both are worse than "the pose was suboptimal".
+由此得出两个事实，而且都比“姿态不够理想”糟糕得多。
 
-**The reachable target set and the joint's legal range did not intersect.**
-$[-0.5, +0.5] \cap [-2.723, -0.838] = \varnothing$. For *every action the policy
-could possibly emit*, the commanded knee angle was outside the knee's physical
-travel — by at least 0.34 rad.
+**可达目标集合与关节的合法范围没有交集。** $[-0.5, +0.5] \cap [-2.723, -0.838] = \varnothing$。对于*策略可能输出的每一个动作*，指令给出的膝关节角度都在膝关节的物理行程之外——至少差 0.34 rad。
 
-**Every episode began in an illegal configuration.** `qpos0` puts the calf
-joints at 0, itself outside $[-2.723, -0.838]$. So every reset placed the robot
-in a state violating its own joint limits, and MuJoCo's limit constraints spent
-the first steps of every episode shoving the joints back while the PD controller
-pulled the other way.
+**每个回合都从一个非法构型开始。** `qpos0` 把小腿关节置于 0，而 0 本身就在 $[-2.723, -0.838]$ 之外。于是每次重置都把机器人放进一个违反其自身关节限位的状态，在每个回合的最初几步里，MuJoCo 的限位约束忙着把关节往回推，而 PD 控制器则往另一个方向拉。
 
-The Go2's calf range does not contain zero. There is no configuration of this
-robot with a straight knee. v1 spent five training runs asking for one.
+Go2 的小腿关节范围不包含零。这台机器人根本不存在膝关节伸直的构型。v1 花了五次训练运行去索要一个这样的构型。
 
-### The fix
+### 修复
 
 ```python
 self._home_key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, "home")
@@ -83,12 +60,11 @@ if self._home_key_id < 0:
 self.default_joint_pos = self.model.key_qpos[self._home_key_id, 7:].copy()
 ```
 
-and `mj_resetDataKeyframe` instead of `mj_resetData` in `reset()`.
+并且在 `reset()` 中用 `mj_resetDataKeyframe` 取代 `mj_resetData`。
 
-### Confirmed by test
+### 经测试确认
 
-`tests/test_env.py` asserts both directions — that the fix is right, and that
-the bug was real:
+`tests/test_env.py` 从两个方向做了断言——既断言修复是对的，也断言 bug 确实存在：
 
 ```python
 def test_nominal_pose_is_a_standing_pose(env):
@@ -100,47 +76,38 @@ def test_v1_nominal_pose_would_not_stand():
     assert fell, "expected the all-zeros pose to collapse"
 ```
 
-The second test passes: driving the same PD controller toward the all-zeros pose
-collapses the robot within two seconds.
+第二个测试能通过：用同一个 PD 控制器把机器人朝全零姿态驱动，两秒之内机器人就会垮掉。
 
-### Lesson
+### 教训
 
-**When you load a robot model, print the nominal pose and check it against the
-joint limits before anything else.** It is three lines. Nothing errors if you
-skip it; the simulation runs, the policy trains, the curve goes up, and you
-publish a number that is a fraction of what the robot can do.
+**加载机器人模型时，先把名义姿态打印出来，对照关节限位检查一遍，再做别的。** 只要三行代码。跳过它不会有任何报错；仿真照跑，策略照训，曲线照样上升，然后你发布的数字只是这台机器人真实能力的零头。
 
-`scripts/check_env.py` now does this as its first section.
+`scripts/check_env.py` 现在把这项检查作为它的第一部分。
 
 ---
 
-## B2 — Velocity was tracked in the world frame
+## B2 —— 速度是在世界坐标系中跟踪的
 
-### The code
+### 代码
 
 ```python
 base_lin_vel = self.data.qvel[0:3]                       # WORLD frame
 lin_vel_error = (self.cmd_vel[0] - base_lin_vel[0]) ** 2
 ```
 
-and identically in `_get_obs`.
+`_get_obs` 中也一模一样。
 
-For a free joint, `qvel[0:3]` is the linear velocity **in the fixed world
-frame**. It is not the robot's forward velocity.
+对于自由关节，`qvel[0:3]` 是**在固定的世界坐标系中**的线速度。它不是机器人的前进速度。
 
-### Why it survived
+### 为什么它一直没被发现
 
-v1 never randomised the initial heading and never commanded a yaw rate. The
-robot always faced $+x$, where world-frame and base-frame velocity coincide. The
-bug was invisible right up until someone asked for a turn — which is to say,
-until v2.
+v1 从未随机化初始朝向，也从未下达过偏航角速度指令。机器人总是面朝 $+x$，此时世界坐标系速度与机身坐标系速度恰好一致。这个 bug 一直隐形，直到有人要求机器人转弯——也就是说，直到 v2。
 
-The irony: v1 *had* a correct `_quat_rotate_inverse`, verified here against
-MuJoCo's `mju_rotVecQuat`. It was used for gravity and never for velocity.
+讽刺的是：v1 *本来就有*一个正确的 `_quat_rotate_inverse`，这里也已对照 MuJoCo 的 `mju_rotVecQuat` 验证过。它被用在了重力上，却从未用在速度上。
 
-### The fix
+### 修复
 
-Rotate everything into the base frame:
+把所有量都旋转到机身坐标系中：
 
 ```python
 def _refresh_frame_cache(self):
@@ -150,53 +117,42 @@ def _refresh_frame_cache(self):
     self._proj_gravity = self.quat_rotate_inverse(q, self._GRAVITY_DIR)
 ```
 
-### Lesson
+### 教训
 
-A frame error is invisible in the symmetric case that your tests happen to
-cover. Randomising the initial yaw is cheap and makes the class of bug
-impossible to hide.
+坐标系错误在你的测试恰好覆盖的那种对称情形下是看不见的。随机化初始偏航角成本很低，却能让这一类 bug 无处藏身。
 
 ---
 
-## B3 — The reward could only express "go forward"
+## B3 —— 奖励只能表达“往前走”
 
-Three separate defects that combine into "it only does a forward gait".
+三个独立的缺陷，合在一起就成了“它只会一种往前走的步态”。
 
-**Only $v_x$ was tracked.** `cmd_vel[1]` appeared nowhere in the reward.
+**只跟踪了 $v_x$。** `cmd_vel[1]` 在奖励中根本没有出现。
 
-**Lateral motion was punished unconditionally.** `r_lateral = -abs(v_y) * 0.5`.
-So a hypothetical sideways command was not merely untracked — it was actively
-penalised. The two objectives were in direct contradiction and the penalty won.
+**横向运动被无条件惩罚。** `r_lateral = -abs(v_y) * 0.5`。所以一个假想的侧向指令不仅没被跟踪——还会被主动惩罚。两个目标直接矛盾，而惩罚项占了上风。
 
-**The command was constant for the entire run.** A policy shown one command has
-no reason to *condition* on it, so it collapses to an open-loop gait. The
-command occupied three of the 53 observation dimensions and carried no
-information.
+**指令在整个训练运行中保持不变。** 一个只见过一种指令的策略没有任何理由以指令为*条件*，于是它退化成一种开环步态。指令占了 53 维观测中的三维，却不携带任何信息。
 
-And the curriculum (B5) ramped only forward speed, so $v_y$ and $\omega_z$ were
-pinned at zero for every step of every run.
+再加上课程（B5）只提升前进速度，所以在每次运行的每一步中，$v_y$ 和 $\omega_z$ 都被钉死在零。
 
-### The fix
+### 修复
 
-`envs/commands.py`: three-dimensional commands, resampled at reset and every 5 s
-within an episode, with an explicit stand-still mode. `envs/rewards.py`:
+`envs/commands.py`：三维指令，在重置时以及回合内每 5 s 重新采样一次，并带有显式的原地站立模式。`envs/rewards.py`：
 
 ```python
 err = xp.sum(xp.square(s.cmd[:2] - s.lin_vel_b[:2]))   # both axes
 return xp.exp(-err / s.lin_vel_sigma)
 ```
 
-### Lesson
+### 教训
 
-"The robot only walks forward" was never a capability limit. The environment
-never asked it to do anything else. Before concluding a policy *cannot* do
-something, check that the reward makes it *expressible*.
+“机器人只会往前走”从来都不是能力上限。环境从没要求过它做别的事。在断定一个策略*做不到*某件事之前，先检查奖励是否让这件事*可以表达*。
 
 ---
 
-## B4 — The gait reward had no notion of time
+## B4 —— 步态奖励没有时间概念
 
-### The code
+### 代码
 
 ```python
 def _gait_reward(self):
@@ -206,30 +162,25 @@ def _gait_reward(self):
     return abs(diag1 - diag2)
 ```
 
-Intent: reward a trot, in which diagonal pairs alternate.
+意图：奖励小跑，即对角两条腿成对交替。
 
-### The evidence
+### 证据
 
-A robot standing motionless on FL and RR: $\text{diag1}=1$, $\text{diag2}=0$,
-reward $=|1-0|=1.0$. **The maximum, every step, forever, without moving.**
+一台靠 FL 和 RR 一动不动站着的机器人：$\text{diag1}=1$，$\text{diag2}=0$，奖励 $=|1-0|=1.0$。**最大值，每一步，永远如此，一动都不用动。**
 
-The expression has no time dependence at all. It sees one instant, and
-"alternating" is a property of a sequence. No function of a single contact
-vector can express it.
+这个表达式完全不依赖于时间。它只看见一个瞬间，而“交替”是一个序列的属性。任何关于单个接触向量的函数都无法表达它。
 
-### The fix
+### 修复
 
-The fix is not a cleverer contact expression — none exists. It is to introduce a
-**reference the contact can be compared against**: a phase clock (chapter 11).
+修复方法不是想出更巧妙的接触表达式——这样的表达式不存在。而是引入一个**可供接触状态对照的参照**：相位时钟（第 11 章）。
 
 $$
 r = \tfrac14\textstyle\sum_i \big[ c_i d_i + (1-c_i)(1-d_i) \big]
 $$
 
-Now a frozen robot averages exactly 0.5, and there is no stationary
-configuration that scores above it.
+现在一台静止不动的机器人平均恰好得到 0.5，而且不存在任何得分高于它的静止构型。
 
-### Confirmed by test
+### 经测试确认
 
 ```python
 def test_v1_gait_reward_was_maximised_by_standing_still():
@@ -238,17 +189,15 @@ def test_v1_gait_reward_was_maximised_by_standing_still():
     assert np.mean(scores) == pytest.approx(0.5)  # v2: chance
 ```
 
-### Lesson
+### 教训
 
-The canonical shape of reward hacking: a **proxy** (contact asymmetry) stood in
-for the **property** (alternation), and the proxy was cheaper to satisfy. Ask of
-every reward term: what is the cheapest state that maximises this?
+这是奖励投机（reward hacking）的经典形态：一个**代理指标**（接触不对称）顶替了**真正的属性**（交替），而满足代理指标的代价更低。对每一个奖励项都问一句：能让它取到最大值的最廉价状态是什么？
 
 ---
 
-## B5 — The curriculum made 8 blocking IPC round trips per environment step
+## B5 —— 课程在每个环境步中进行 8 次阻塞式 IPC 往返
 
-### The code
+### 代码
 
 ```python
 def _on_step(self):
@@ -259,24 +208,17 @@ def _on_step(self):
                                      indices=[env_idx])
 ```
 
-### The evidence
+### 证据
 
-`_on_step` runs on **every environment step**. Under `SubprocVecEnv`, each
-`env_method(..., indices=[i])` pickles its arguments, writes to a pipe, and
-**blocks** for the worker's reply. The loop does that once per environment.
+`_on_step` 在**每一个环境步**都会运行。在 `SubprocVecEnv` 下，每次 `env_method(..., indices=[i])` 都要把参数 pickle 序列化、写入管道，然后**阻塞**等待 worker 的回复。这个循环对每个环境都做一遍。
 
-At 8 environments: 8 blocking round trips per step, to send a value that had not
-changed since the previous step. Against a physics step costing about 1 ms, this
-is pure overhead — and it is invisible in every trace except `time/fps`.
+8 个环境时：每步 8 次阻塞式往返，只为了发送一个自上一步以来根本没变过的值。相比每次约 1 ms 的物理步，这纯粹是额外开销——而且除了 `time/fps` 之外，它在任何监控曲线上都看不出来。
 
-Two design bugs on top of the performance one: the ramp was **open loop** (a
-function of timesteps, not of whether the policy could cope), and a **scalar
-cannot describe a 3-D command space**.
+在性能问题之上还有两个设计 bug：这个递增过程是**开环**的（它是时间步数的函数，而不是策略能否应付的函数），而且**一个标量无法描述三维指令空间**。
 
-### The fix
+### 修复
 
-Accumulate in-process on every step; one broadcast call per rollout, and only
-when the level actually changed:
+在每一步中都在进程内累积；每个 rollout 只做一次广播调用，而且只在等级真正变化时才调用：
 
 ```python
 def _on_step(self):
@@ -292,19 +234,17 @@ def _push_ranges(self, force=False):
     self.training_env.env_method("set_command_ranges", self.curriculum.ranges)
 ```
 
-One call per 8192 steps rather than eight per step: about 65,000× fewer round
-trips. And the curriculum is now closed loop on measured tracking performance.
+每 8192 步一次调用，而不是每步八次：往返次数减少约 65,000×。而且课程现在基于实测的跟踪表现形成闭环。
 
-### Lesson
+### 教训
 
-Callbacks that fire per step are on the hottest path in the system. Anything
-that crosses a process boundary belongs in `_on_rollout_end`.
+每步触发的回调位于整个系统最热的路径上。任何跨越进程边界的操作都应该放进 `_on_rollout_end`。
 
 ---
 
-## B6 — The PD controller was a zero-order hold
+## B6 —— PD 控制器成了零阶保持
 
-### The code
+### 代码
 
 ```python
 torques = self.kp * (target_pos - current_pos) - self.kd * current_vel
@@ -313,17 +253,13 @@ for _ in range(self.frame_skip):        # 20 steps = 40 ms
     mujoco.mj_step(self.model, self.data)
 ```
 
-### The evidence
+### 证据
 
-$\tau$ is constant for 40 ms. The $-k_d \dot q$ term — the entire damping
-mechanism — is evaluated once from a velocity that becomes up to 40 ms stale.
-During a foot strike, when joint velocities reverse in a few milliseconds, the
-"damping" term can be actively *driving* the oscillation it exists to suppress.
+$\tau$ 在 40 ms 内保持不变。$-k_d \dot q$ 项——整个阻尼机制——只根据一个最多会过时 40 ms 的速度计算一次。在足端触地期间，关节速度会在几毫秒内反向，这时“阻尼”项可能反而在主动*驱动*它本该抑制的振荡。
 
-This is not what a PD controller is. Real hardware runs the inner loop at
-500–1000 Hz while the policy runs at 50.
+这不是 PD 控制器该有的样子。真实硬件以 500–1000 Hz 运行内环，而策略以 50 Hz 运行。
 
-### The fix
+### 修复
 
 ```python
 for _ in range(self.decimation):
@@ -333,33 +269,25 @@ for _ in range(self.decimation):
     mujoco.mj_step(self.model, self.data)
 ```
 
-### Note
+### 备注
 
-v1's **gains** ($k_p=40$, $k_d=1$) were reasonable and were not the problem. It
-is worth resisting the urge to change everything when a system underperforms;
-change what the evidence implicates. (The gains were eventually raised to
-$k_p=55$ for an unrelated, separately measured reason — B17.)
+v1 的**增益**（$k_p=40$，$k_d=1$）是合理的，并不是问题所在。当系统表现不佳时，值得克制住把一切都改一遍的冲动；证据指向什么，就改什么。（增益后来被提高到 $k_p=55$，那是出于一个不相干的、单独测量过的原因——B17。）
 
 ---
 
-## B7 — Control ran at 25 Hz
+## B7 —— 控制频率只有 25 Hz
 
-`frame_skip=20` at a 2 ms timestep. The field standard for legged RL is 50 Hz.
+在 2 ms 时间步长下 `frame_skip=20`。足式机器人强化学习领域的标准是 50 Hz。
 
-A 2 Hz trot gives 25 control decisions per stride at 50 Hz and only 12 at 25 Hz.
-Twelve decision points is not many for placing four feet.
+一个 2 Hz 的小跑，在 50 Hz 下每个步态周期有 25 个控制决策点，在 25 Hz 下只有 12 个。要安排四只脚的落足，十二个决策点并不算多。
 
-Fixed by `decimation: 10`.
+通过 `decimation: 10` 修复。
 
-**The consequence that is easy to miss:** changing the control rate changes the
-meaning of $\gamma$. At $\gamma = 0.99$ the effective horizon is 100 steps —
-4 seconds at 25 Hz, 2 seconds at 50 Hz. Doubling the control rate *halved* the
-planning horizon. Two seconds is the right number for locomotion, so this
-happened to be fine, but it had to be checked rather than assumed.
+**容易被忽略的后果：** 改变控制频率会改变 $\gamma$ 的含义。在 $\gamma = 0.99$ 时，有效视界是 100 步——在 25 Hz 下是 4 秒，在 50 Hz 下是 2 秒。把控制频率翻倍，规划视界就*减半*了。对运动控制来说两秒正合适，所以这里碰巧没问题，但这必须经过核实，而不能想当然。
 
 ---
 
-## B8 — Reset produced a single initial condition
+## B8 —— 重置只产生单一初始条件
 
 ```python
 mujoco.mj_resetData(self.model, self.data)
@@ -367,20 +295,15 @@ noise = self.np_random.uniform(-0.05, 0.05, size=self.n_actuators)
 self.data.qpos[7:] = self.default_joint_pos + noise
 ```
 
-Joint angles perturbed by $\pm 0.05$ rad; nothing else. No base height,
-attitude, or velocity noise. No heading randomisation.
+关节角度被扰动 $\pm 0.05$ rad；仅此而已。没有机身高度、姿态或速度噪声。没有朝向随机化。
 
-A policy trained from one initial state has never seen the states it visits
-*after a stumble*, so it cannot recover from one. Randomising the full initial
-condition is cheap and is most of what "push recovery" actually consists of.
-Random initial yaw additionally makes B2-class frame bugs impossible to hide.
+一个从单一初始状态训练出来的策略，从未见过*绊了一下之后*会访问到的那些状态，因此也无法从中恢复。随机化完整的初始条件成本很低，而且“推扰恢复”实际上大部分就是这个。随机初始偏航角还能让 B2 这一类坐标系 bug 无处藏身。
 
-Fixed: height, roll/pitch, yaw (uniform on $[-\pi,\pi)$), both base velocities,
-joint velocities, and the initial gait phase are all randomised.
+已修复：高度、横滚/俯仰、偏航（在 $[-\pi,\pi)$ 上均匀分布）、机身的线速度和角速度、关节速度，以及初始步态相位，全部随机化。
 
 ---
 
-## B9 — A new OpenGL context per rendered frame
+## B9 —— 每渲染一帧就新建一个 OpenGL 上下文
 
 ```python
 elif self.render_mode == "rgb_array":
@@ -389,12 +312,11 @@ elif self.render_mode == "rgb_array":
     renderer.close()
 ```
 
-Constructing and destroying a `mujoco.Renderer` — and with it a GL context —
-on every single frame. Fixed by creating it lazily once and reusing it.
+每一帧都构造并销毁一个 `mujoco.Renderer`——连带一个 GL 上下文。修复方法是在首次需要时创建一次，之后复用。
 
 ---
 
-## B10 — Foot contact detection counted the wrong contacts
+## B10 —— 足端接触检测统计了错误的接触
 
 ```python
 for i in range(self.data.ncon):
@@ -404,13 +326,9 @@ for i in range(self.data.ncon):
             contacts[foot_idx] = 1.0
 ```
 
-Two failures. It never checked the **other** geom, so foot-on-shin and
-foot-on-foot self-contact counted as ground contact. And it used the mere
-*existence* of a contact pair, so a foot grazing the ground scored the same as
-one bearing a quarter of the robot's weight.
+两处失误。它从不检查**另一个** geom，所以足端碰小腿、足端碰足端这类自接触都被算成了地面接触。而且它只看接触对是否*存在*，所以一只轻轻擦过地面的脚，和一只承受着机器人四分之一体重的脚，得分相同。
 
-Fixed by requiring the counterpart to be the floor geom and the normal force to
-exceed 1 N (against a 149 N robot):
+修复方法是要求接触的另一方必须是地面 geom，且法向力超过 1 N（机器人重 149 N）：
 
 ```python
 if g1 == self.floor_geom_id:   other = g2
@@ -420,23 +338,20 @@ mujoco.mj_contactForce(self.model, self.data, i, force)
 if abs(force[0]) < force_threshold: continue
 ```
 
-### The silent fallback, which was worse
+### 更糟糕的是那个静默回退
 
 ```python
 if len(self.foot_geom_ids) != 4:
     self.foot_geom_ids = list(range(self.model.ngeom - 4, self.model.ngeom))
 ```
 
-"The last four geoms" is not a foot detector. Had the names ever failed to
-resolve, the gait reward would have silently rewarded contacts on arbitrary
-bodies, and nothing would have indicated it. v2 raises instead.
+“最后四个 geom”可不是足端检测器。要是名称解析哪天失败了，步态奖励就会静默地奖励任意刚体上的接触，而且没有任何迹象表明这一点。v2 改为直接抛出异常。
 
-**Lesson:** a fallback that silently changes what is being optimised is worse
-than a crash. Misconfiguration should stop the program.
+**教训：** 一个静默改变优化目标的回退比崩溃更糟。配置错误就应该让程序停下来。
 
 ---
 
-## B11 — Pushes were deterministic and unphysical
+## B11 —— 推扰是确定性的，而且不符合物理
 
 ```python
 if self.step_count > 0 and self.step_count % 200 == 0:
@@ -444,19 +359,15 @@ if self.step_count > 0 and self.step_count % 200 == 0:
     self.data.qvel[0:3] += push
 ```
 
-**Exactly periodic**, so the policy could memorise "step 200" and brace rather
-than learn general recovery. And it wrote directly into `qvel`, teleporting up
-to 3 m/s of velocity with no force, no impulse through the contacts, and no
-correspondence to anything that can physically happen.
+**严格周期性**，所以策略可以记住“第 200 步”并提前做好准备，而不去学习通用的恢复能力。而且它直接写入 `qvel`，凭空瞬移出最多 3 m/s 的速度——没有力，没有经由接触传递的冲量，也不对应任何物理上可能发生的事情。
 
-Fixed: a real force through `xfrc_applied`, up to 40 N, held for 0.15 s, at
-randomised intervals of 3–7 s, mostly horizontal.
+已修复：通过 `xfrc_applied` 施加真实的力，最大 40 N，持续 0.15 s，间隔在 3–7 s 之间随机，且大多为水平方向。
 
 ---
 
-## B12 — Resuming training silently destroyed the policy
+## B12 —— 恢复训练会静默地毁掉策略
 
-**The nastiest bug in the original repository, because nothing errors.**
+**原仓库中最恶劣的 bug，因为什么都不报错。**
 
 ```python
 env = SubprocVecEnv([...])
@@ -466,16 +377,11 @@ if args.resume:
     model = PPO.load(args.resume, env=env)
 ```
 
-`VecNormalize` maintains running mean and variance of the observation. The
-checkpoint's companion `.pkl` was saved by `CheckpointCallback` and **never
-loaded**. So on resume the statistics reset to mean 0, variance 1, and the
-policy — trained on observations normalised by statistics accumulated over
-millions of steps — received inputs on a completely different scale.
+`VecNormalize` 维护着观测的滑动均值和方差。与检查点配套的 `.pkl` 文件由 `CheckpointCallback` 保存，却**从未被加载**。于是恢复训练时，统计量被重置为均值 0、方差 1，而策略——它是在用数百万步累积的统计量归一化过的观测上训练出来的——收到的输入尺度完全不同。
 
-Nothing raises. The run continues. The loss simply gets worse, and it looks like
-the policy "forgot".
+什么都不会抛出异常。运行照常继续。损失只是变差了，看起来就像策略“忘了”。
 
-### The fix
+### 修复
 
 ```python
 stats_path = args.vecnormalize or _guess_vecnormalize_path(args.resume)
@@ -487,69 +393,50 @@ else:
     raise SystemExit("Could not find the VecNormalize statistics ...")
 ```
 
-Note the `raise`. Resuming without the statistics is never what anyone wants, so
-it should be impossible rather than merely inadvisable.
+注意那个 `raise`。在没有统计量的情况下恢复训练，永远不会是任何人想要的，所以它应该是不可能的，而不仅仅是不推荐的。
 
-### Lesson
+### 教训
 
-**Normalisation statistics are part of the model.** The from-scratch
-implementation makes this structural — `PPO.save` writes `obs_rms` into the same
-file as the weights, so they cannot be separated.
+**归一化统计量是模型的一部分。** 从零实现的版本从结构上保证了这一点——`PPO.save` 把 `obs_rms` 和权重写进同一个文件，二者无法分开。
 
-The same failure appears at inference time: `scripts/play.py` and
-`scripts/evaluate.py` both load the statistics and warn loudly if they cannot
-find them.
+同样的失败也会出现在推理阶段：`scripts/play.py` 和 `scripts/evaluate.py` 都会加载统计量，找不到时会大声警告。
 
 ---
 
-## B13 — The evaluation environment updated its own normalisation
+## B13 —— 评估环境自己更新自己的归一化
 
 ```python
 eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
 ```
 
-`training` defaults to `True`, so the eval environment kept updating its own
-running statistics between evaluations. `EvalCallback` syncs the training env's
-statistics across before each evaluation, so the effect is bounded — but it means
-each evaluation measures a slightly different normalisation, adding noise to the
-one curve that is supposed to be the clean measurement.
+`training` 默认为 `True`，所以评估环境在两次评估之间一直在更新它自己的滑动统计量。`EvalCallback` 在每次评估前会把训练环境的统计量同步过来，所以影响是有限的——但这意味着每次评估所用的归一化都略有不同，给那条本应是干净测量的曲线平添了噪声。
 
-Fixed with `eval_env.training = False`.
+通过 `eval_env.training = False` 修复。
 
 ---
 
-## B14 — 2560 gradient steps per rollout
+## B14 —— 每个 rollout 2560 次梯度更新
 
 | | v1 | v2 |
 |---|---|---|
 | rollout | $8 \times 2048 = 16384$ | $16 \times 512 = 8192$ |
 | `batch_size` | 64 | 2048 |
 | `n_epochs` | 10 | 5 |
-| **gradient steps per rollout** | **2560** | **20** |
+| **每个 rollout 的梯度更新次数** | **2560** | **20** |
 
-PPO's entire premise (chapter 5) is that the policy stays near the one that
-collected the data. No clip range keeps a policy near $\theta_\text{old}$ across
-2560 updates. In practice the clip fraction saturates, most samples contribute
-no gradient, and the compute is spent for nothing — a stability risk and a large
-waste simultaneously.
+PPO 的全部前提（第 5 章）是策略始终停留在收集数据的那个策略附近。没有哪个裁剪范围能让策略在 2560 次更新之后仍然靠近 $\theta_\text{old}$。实际上，裁剪比例会饱和，大多数样本不贡献任何梯度，算力白白浪费——这同时是一个稳定性隐患和一种巨大的浪费。
 
-Also fixed in the same pass: `ent_coef` 0.01 → 0.002 (v1's value pays the policy
-to stay noisy, which for a legged robot means it never settles into the
-low-variance limit cycle a trot requires), plus a linear LR schedule, a
-`target_kl` early stop, value clipping, and `log_std_init = -1.0`.
+同一轮中一并修复的还有：`ent_coef` 0.01 → 0.002（v1 的取值等于花钱让策略保持噪声，对足式机器人来说，这意味着它永远无法稳定到小跑所需的那种低方差极限环上），外加线性学习率调度、`target_kl` 提前停止、价值裁剪，以及 `log_std_init = -1.0`。
 
 ---
 
-## B15 — The observation docstring said 49; the space was 53
+## B15 —— 观测的 docstring 写的是 49，空间实际是 53
 
-Cosmetic on its own. Worth recording because of what it indicates: the
-observation had been edited without anyone re-deriving its size. Where the
-documentation and the code disagree, one of them has been changed without
-thought, and it is worth finding out which.
+单独来看只是表面问题。值得记录，是因为它透露的信息：观测被修改过，却没有人重新推算它的维度。只要文档和代码对不上，就说明其中一方在没过脑子的情况下被改过，值得弄清楚是哪一方。
 
 ---
 
-## B16 — `mujoco.viewer` was used without being imported
+## B16 —— 使用了 `mujoco.viewer` 却没有导入它
 
 ```python
 import mujoco
@@ -557,74 +444,50 @@ import mujoco
 self._viewer = mujoco.viewer.launch_passive(self.model, self.data)
 ```
 
-`mujoco.viewer` is a submodule and is not imported by `import mujoco`. This
-would raise `AttributeError` on any call to `render("human")` — which suggests
-that path had never been exercised, despite `make evaluate-render` existing.
+`mujoco.viewer` 是一个子模块，`import mujoco` 并不会导入它。任何对 `render("human")` 的调用都会抛出 `AttributeError`——这说明尽管 `make evaluate-render` 一直存在，这条路径却从未被执行过。
 
 ---
 
-## B17 — Swing clearance was marginal (found in v2, not v1)
+## B17 —— 摆动抬足高度勉强够用（在 v2 中发现，而非 v1）
 
-Included because it was found the same way and is the best illustration of the
-method.
+收录它，是因为它的发现方式相同，而且是对这种方法最好的示范。
 
-**Symptom.** After the v2 rewrite, a 524k-step run had `rew/feet_air_time`
-exactly zero: the robot was standing and leaning, never lifting a foot.
+**症状。** v2 重写之后，一次 524k 步的运行中 `rew/feet_air_time` 恰好为零：机器人站着、身体前倾，从不抬脚。
 
-**The step that mattered.** Rather than tuning rewards further, drive the
-environment with a **hand-written open-loop trot** and ask whether the behaviour
-is expressible at all.
+**关键的一步。** 不再继续调奖励，而是用一个**手写的开环小跑**来驱动环境，问一个问题：这种行为到底能不能被表达出来？
 
-It was not, quite. A kinematic sweep said 0.25 rad of joint offset retracts a
-foot 5.9 cm — plenty for a trot needing 3–5 cm. But the trunk is not fixed:
-while two legs retract, the other two carry the whole robot and sag further, and
-the body drops by nearly as much as the swing foot rises.
+答案是：差一点点不能。运动学扫描显示，0.25 rad 的关节偏移能让一只脚收回 5.9 cm——对于只需要 3–5 cm 的小跑绰绰有余。但躯干并不是固定的：当两条腿收起时，另外两条腿要承担整台机器人的重量，下沉得更多，于是身体下降的幅度几乎和摆动足抬起的幅度一样大。
 
-| $k_p$ | scale | stance extension | max air time | schedule match |
+| $k_p$ | 缩放 | 支撑腿伸展 | 最大腾空时间 | 时间表匹配度 |
 |---|---|---|---|---|
-| 40 | 0.25 | no | 0.12 s | 0.61 |
-| 40 | 0.25 | yes | 0.24 s | 0.61 |
-| 55 | 0.30 | yes | 0.20 s | **0.78** |
-| 80 | 0.35 | yes | 0.30 s | 0.84 |
+| 40 | 0.25 | 否 | 0.12 s | 0.61 |
+| 40 | 0.25 | 是 | 0.24 s | 0.61 |
+| 55 | 0.30 | 是 | 0.20 s | **0.78** |
+| 80 | 0.35 | 是 | 0.30 s | 0.84 |
 
-Fixed by raising $k_p$ to 55 and the action scale to 0.30 — enough headroom for
-the policy to extend the stance legs and retract the swing legs simultaneously.
-$k_p = 80$ scores better still and was rejected: that stiff, the policy starts
-exploiting contact impulses no real actuator produces.
+修复方法是把 $k_p$ 提高到 55，把动作缩放提高到 0.30——留出足够的余量，让策略能同时伸展支撑腿、收起摆动腿。$k_p = 80$ 得分更高，但被否决了：刚度到了那个程度，策略开始利用任何真实执行器都产生不了的接触冲量。
 
-**Lesson, and the most transferable thing in this chapter:** when a policy will
-not learn a behaviour, **script the behaviour open-loop and measure whether the
-environment can express it.** If a hand-written controller cannot do it, no
-amount of reward tuning will. It converts an open-ended search over
-hyperparameters into a bounded question about kinematics.
+**教训，也是本章最具可迁移性的一条：** 当策略学不会某种行为时，**用开环脚本把这种行为写出来，测量环境能否表达它。** 如果手写的控制器都做不到，再怎么调奖励也没用。这把一个对超参数的开放式搜索，转化成了一个关于运动学的有界问题。
 
 ---
 
-## B18 — The stepping reward had no gradient (found in v2)
+## B18 —— 迈步奖励没有梯度（在 v2 中发现）
 
-With B17 fixed, the next run still stalled: 1.1 million steps,
-`rew/feet_air_time` still exactly zero, `rew/gait_phase` at 55% of its maximum.
+B17 修复之后，下一次运行仍然停滞不前：110 万步，`rew/feet_air_time` 依然恰好为零，`rew/gait_phase` 停在其最大值的 55%。
 
-55% is the diagnostic number. A robot with all four feet planted, under a trot
-schedule with duty 0.5, matches the two feet scheduled for stance and mismatches
-the two scheduled for swing — exactly 0.5, every step. The policy was standing.
+55% 是那个具有诊断意义的数字。一台四脚着地的机器人，在占空比 0.5 的小跑时间表下，与计划处于支撑相的两只脚匹配、与计划处于摆动相的两只脚不匹配——恰好 0.5，每一步都是。策略在站着。
 
-This time the reward was not *wrong*. It was **flat**.
+这一次奖励并没有*错*。它是**平的**。
 
-`gait_phase` compares a **binary** contact flag against the schedule:
+`gait_phase` 把一个**二值**接触标志与时间表进行比较：
 
 $$
 r = \tfrac14 \sum_i \big[ c_i d_i + (1-c_i)(1-d_i) \big]
 $$
 
-$c_i \in \lbrace 0, 1\rbrace $; there is nothing in between. On the standing robot the foot
-geoms sit at 9.5 mm. Raising a foot to 9.4 mm leaves $c_i$ unchanged and
-therefore leaves the reward unchanged. **The gradient is exactly zero all the
-way up to a discontinuity** — and that discontinuity is precisely the barrier a
-policy that has never stepped must cross. Weighting the term more heavily does
-not help: three times zero is still zero.
+$c_i \in \lbrace 0, 1\rbrace $；中间没有任何取值。站立的机器人足端 geom 位于 9.5 mm 高度。把一只脚稍微抬到 9.6 mm，$c_i$ 不变，因此奖励也不变。**梯度一路恰好为零，直到一个间断点**——而这个间断点恰恰是一个从未迈过步的策略必须跨越的障碍。加大这一项的权重也无济于事：零乘以三还是零。
 
-| swing foot raised by | `gait_phase` | `feet_clearance` |
+| 摆动足抬高 | `gait_phase` | `feet_clearance` |
 |---|---|---|
 | 0.0 cm | 0.50 | $-0.00333$ |
 | 0.5 cm | 0.75 | $-0.00278$ |
@@ -633,46 +496,35 @@ not help: three times zero is still zero.
 | 4.0 cm | 0.75 | $-0.00031$ |
 | 8.0 cm | 0.75 | $\phantom{-}0.00000$ |
 
-### The fix
+### 修复
 
-A new term, `feet_clearance`, weight $-30$:
+新增一项 `feet_clearance`，权重 $-30$：
 
 $$
 r = \sum_{i=1}^{4} (1 - d_i)(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
 $$
 
-Foot height is continuous, so this pulls the swing foot upward from the first
-millimetre. It is gated by $(1 - d_i)$, so it applies only to feet the schedule
-wants in the air and vanishes entirely under a stand command.
+足端高度是连续的，所以这一项从第一毫米起就把摆动足往上拉。它受 $(1 - d_i)$ 门控，因此只作用于时间表希望处于空中的脚，在站立指令下则完全消失。
 
-The three stepping terms now decompose cleanly:
+三个迈步相关的奖励项现在分工清晰：
 
-- `feet_clearance` gets a foot **off the ground** (dense, continuous).
-- `gait_phase` gets it off the ground **at the right time** (the timing).
-- `feet_air_time` makes the resulting stride **a real one** (credited at
-  touchdown).
+- `feet_clearance` 让脚**离开地面**（稠密、连续）。
+- `gait_phase` 让脚**在正确的时刻**离开地面（时机）。
+- `feet_air_time` 让由此产生的步伐**成为真正的一步**（在触地时计分）。
 
-### Lesson
+### 教训
 
-> **A reward term defined on a thresholded quantity — a contact flag, a success
-> indicator, any boolean — is piecewise constant. A policy cannot climb a
-> staircase whose slope it cannot see.**
+> **定义在阈值化量上的奖励项——接触标志、成功指示、任何布尔量——都是分段常数。策略爬不上一段它看不见坡度的台阶。**
 
-The general diagnostic: for each reward term, ask what its derivative with
-respect to the behaviour you want is, *in the region the policy currently
-occupies*. If it is zero, that term cannot teach the behaviour at any weight.
-Whenever a term is built on a boolean, find the continuous quantity underneath
-it and reward that too.
+通用的诊断方法：对每个奖励项，问它关于你想要的行为的导数是多少，*在策略当前所处的区域内*。如果为零，那么无论权重多大，这一项都教不会这种行为。只要某一项建立在布尔量之上，就去找出它底下的那个连续量，把它也一并奖励。
 
 ---
 
-## B19 — The stride reward made a correct trot worse than standing (found in v2)
+## B19 —— 步伐奖励让一套正确的小跑得分比站着还低（在 v2 中发现）
 
-The third and final stall, and the most instructive of the three, because the
-bug was a **borrowed convention that stopped being true** once the environment
-changed.
+第三次也是最后一次停滞，也是三次中最有启发性的一次，因为这个 bug 是一个**借来的惯例，在环境改变后就不再成立**。
 
-### The term
+### 奖励项
 
 ```python
 def feet_air_time(s):
@@ -680,63 +532,49 @@ def feet_air_time(s):
     return xp.sum((s.feet_air_time - 0.5) * s.feet_first_contact) * moving
 ```
 
-Straight from legged_gym: pay for air time beyond half a second, credited at
-touchdown, so that long strides beat a shuffle.
+直接照搬自 legged_gym：对超过半秒的腾空时间给予奖励，在触地时计分，好让长步幅胜过小碎步。
 
-### The evidence
+### 证据
 
-Work out what a **perfect** trot scores. At the commanded 2 Hz with duty 0.5,
-the scheduled swing time per foot is
+算一算一套**完美的**小跑能得多少分。在指令给定的 2 Hz、占空比 0.5 下，每只脚计划的摆动时间是
 
 $$
 t_\text{swing} = \frac{1 - \beta}{f} = \frac{0.5}{2} = 0.25\ \text{s}
 $$
 
-Every touchdown therefore scores $(0.25 - 0.5) \times 2.0 = -0.5$. Four feet at
-two touchdowns per second is eight events, so $-4.0$ per second, and at
-$\Delta t = 0.02$:
+因此每次触地得分 $(0.25 - 0.5) \times 2.0 = -0.5$。四只脚、每只每秒两次触地，就是八次事件，所以每秒 $-4.0$，在 $\Delta t = 0.02$ 下：
 
 $$
 -0.08\ \text{per control step}
 $$
 
-against a total reward of $+0.03$ per step for standing perfectly still.
+而一动不动地完美站立，每步的总奖励是 $+0.03$。
 
-**The reward function made a flawless trot score roughly four times worse than
-doing nothing.** The policy was not failing to find the gait. It had found it,
-evaluated it, and correctly rejected it.
+**这个奖励函数让一套完美无瑕的小跑，得分比什么都不做还差大约四倍。** 策略并不是没找到这种步态。它找到了，评估了，然后正确地拒绝了它。
 
-The 0.5 s offset is a sensible constant in legged_gym, where the gait frequency
-is *emergent* and the resulting strides are long. It became wrong the moment
-this repository made gait frequency a **commanded input**: the constant no
-longer bears any relation to the swing duration the schedule is asking for.
+0.5 s 这个偏移量在 legged_gym 中是个合理的常数，因为那里的步态频率是*涌现*出来的，由此产生的步伐都很长。可一旦本仓库把步态频率变成**指令输入**，它就错了：这个常数与时间表所要求的摆动时长不再有任何关系。
 
-### The fix
+### 修复
 
-Credit air time up to the scheduled swing duration, rather than offsetting it by
-a constant:
+按计划的摆动时长为上限来给腾空时间计分，而不是减去一个常数偏移：
 
 $$
 r = \mathbb{1}\big[\Vert \mathbf{c}\Vert > 0.1\big] \sum_{i=1}^{4} \min\big(t^\text{air}_i,\ t_\text{swing}\big) \mathbb{1}[\text{foot } i \text{ just landed}]
 $$
 
-with $t_\text{swing} = (1 - \beta)/f$ computed from the **active gait command**.
+其中 $t_\text{swing} = (1 - \beta)/f$ 由**当前生效的步态指令**计算得出。
 
-Three properties, all of which the old form lacked:
+三个性质，旧形式一个都不具备：
 
-- **Non-negative.** Early, imperfect steps are never punished — and those are
-  the only route to good ones.
-- **Saturating.** Hanging a foot in the air beyond its scheduled swing earns
-  nothing extra, so it cannot fight the phase schedule.
-- **Frequency-independent.** The maximum rate is $4(1-\beta)$ per second
-  regardless of $f$, so commanding a faster gait does not inflate the reward.
+- **非负。** 早期不完美的迈步永远不会受到惩罚——而它们是通往好步伐的唯一途径。
+- **饱和。** 让一只脚在空中停留得比计划摆动时间更久，不会多得任何分数，因此它无法与相位时间表相抗衡。
+- **与频率无关。** 无论 $f$ 是多少，最大得分率都是每秒 $4(1-\beta)$，所以指令一个更快的步态并不会抬高奖励。
 
-### Measured effect
+### 实测效果
 
-Scripted open-loop trot versus standing still, under the actual environment
-reward, per control step:
+在实际的环境奖励下，脚本化开环小跑与静止站立的对比，按每个控制步计：
 
-| term | standing | trot | diff |
+| 奖励项 | 站立 | 小跑 | 差值 |
 |---|---|---|---|
 | `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
 | `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
@@ -745,114 +583,74 @@ reward, per control step:
 | `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
 | `feet_slip` | $-0.00000$ | $-0.00085$ | $-0.00085$ |
 
-Stepping now pays about $+0.012$ per step gross and $+0.007$ net of its costs,
-*before* any credit for actually moving. Tracking 0.8 m/s is worth a further
-$+0.029$, so a competent trot beats standing by roughly $+0.036$ per step —
-more than doubling the standing reward.
+迈步现在每步毛收益约 $+0.012$，扣除其代价后净收益 $+0.007$，而这还是在*尚未*计入任何实际移动的奖励之前。跟踪 0.8 m/s 还能再得 $+0.029$，所以一套合格的小跑每步比站立高出大约 $+0.036$——是站立奖励的两倍多。
 
-(The scripted controller in that table only reaches 0.041 m/s, so it collects
-almost none of the tracking reward and still loses narrowly overall. That is a
-limitation of a hand-written open-loop gait, not of the reward.)
+（表中的脚本控制器只能达到 0.041 m/s，所以它几乎拿不到跟踪奖励，总体上仍以微弱差距落败。这是手写开环步态的局限，而不是奖励的问题。）
 
-### Lesson
+### 教训
 
-**A borrowed hyperparameter carries the assumptions of the codebase it came
-from.** The 0.5 s offset encodes "strides are long because the frequency is
-emergent". Import it into an environment where frequency is commanded and it
-silently inverts the sign of the term for the exact behaviour you are trying to
-produce.
+**借来的超参数携带着它来源代码库的假设。** 0.5 s 偏移编码的是“步伐很长，因为频率是涌现的”。把它搬进一个频率由指令给定的环境，它就会对你恰恰想要产生的那种行为，静默地把这一项的符号翻转过来。
 
-The general check, and it is cheap: **evaluate your reward on a hand-scripted
-version of the target behaviour and compare it against the trivial policy.** If
-the behaviour you want does not score higher than doing nothing, no algorithm
-will find it, and you will spend days blaming exploration.
+通用的检查方法，而且成本很低：**用手写脚本实现目标行为，在你的奖励上评估它，并与平凡策略比较。** 如果你想要的行为得分不比什么都不做更高，那么任何算法都找不到它，而你会花上好几天去怪罪探索。
 
 ---
 
-## B20 — The command envelope asked for speeds the robot cannot reach (found in v2)
+## B20 —— 指令范围要求了机器人达不到的速度（在 v2 中发现）
 
-With B19 fixed, the policy finally learned the gait: at 3M steps
-`scripts/gait_analysis.py` reported **86.8% schedule match** and a stride
-frequency of exactly 2.00 Hz on all four feet, with the diagonal pairing
-correct. It was trotting on the spot.
+B19 修复之后，策略终于学会了步态：在 3M 步时，`scripts/gait_analysis.py` 报告了 **86.8% 的时间表匹配度**，四只脚的步频都恰好是 2.00 Hz，对角配对也正确。它在原地小跑。
 
-Achieved forward velocity: **0.064 m/s**, against a command of 0.8.
+实际达到的前进速度：**0.064 m/s**，而指令是 0.8。
 
-### The evidence
+### 证据
 
-Speed comes from stride length times step frequency. During stance the foot is
-planted and the *body* moves over it, so the fore-aft travel available to a
-planted foot is the stride length. That is a kinematic question, answerable
-without training anything — the same sweep used for B17, rotated ninety degrees:
+速度来自步幅乘以步频。在支撑相，足端固定在地面上，是*身体*从它上方移过去，所以一只着地的脚可用的前后行程就是步幅。这是一个运动学问题，不用训练任何东西就能回答——用的还是 B17 那次扫描，只是旋转了九十度：
 
-| action scale | stance foot travel | implied v at 2 Hz |
+| 动作缩放 | 支撑足行程 | 2 Hz 下对应的 v |
 |---|---|---|
 | 0.25 | 16.2 cm | 0.32 m/s |
 | 0.30 | 19.9 cm | 0.40 m/s |
 | 0.40 | 28.5 cm | 0.57 m/s |
 | 0.50 | 34.4 cm | 0.69 m/s |
 
-The config at the time used `action_scale = 0.30` and a command envelope
-reaching **1.5 m/s**. At 2 Hz that needs a 75 cm stride from a 43 cm leg.
+当时的配置使用 `action_scale = 0.30`，而指令范围一直到 **1.5 m/s**。在 2 Hz 下，这需要一条 43 cm 的腿迈出 75 cm 的步幅。
 
-So a large part of the command distribution was unreachable, and — this is the
-part that matters — an unreachable command is not merely unhelpful. The
-exponential tracking kernel *saturates*: at an error of 1.5 m/s its gradient is
-about $4\times10^{-5}$ (chapter 10, §10.3). The policy receives no useful signal
-for those commands at all, so the command channel becomes noise in the
-observation, and the best available behaviour is to ignore it.
+所以指令分布中有很大一部分是不可达的，而且——这才是关键——不可达的指令不只是没用而已。指数跟踪核会*饱和*：在 1.5 m/s 的误差下，它的梯度约为 $4\times10^{-5}$（第 10 章，§10.3）。对于这些指令，策略根本得不到任何有用的信号，于是指令通道就变成了观测中的噪声，而最好的行为就是忽略它。
 
-This is bug B1's shape again — the command space contained points the robot
-could not reach — but quantitative rather than absolute.
+这又是 bug B1 的形态——指令空间中包含机器人到达不了的点——只不过是量上的，而不是绝对的。
 
-### The correction to the correction
+### 对修正的修正
 
-The static sweep is a **lower bound**, and taking it as a hard cap would have
-been a second mistake in the opposite direction. Driving a scripted open-loop
-trot and simply measuring the top speed it reaches:
+静态扫描给出的是一个**下界**，把它当作硬上限会是朝相反方向犯下的第二个错误。用一个脚本化开环小跑驱动机器人，直接测量它能达到的最高速度：
 
-| action scale | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
+| 动作缩放 | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
 |---|---|---|---|---|
 | 0.30 | 0.52 | 0.62 | 0.65 | 0.69 |
 | 0.40 | 0.57 | **0.94** | 1.05 | **1.08** |
 
-The real robot goes considerably faster than the static sweep predicts, because
-body pitch, foot roll on the spherical contact, and dynamic effects all add
-stride that a fixed-base kinematic sweep cannot see. At `action_scale = 0.40`
-the measured ceiling is about 1.08 m/s, not the 0.87 the sweep implies.
+真实的机器人比静态扫描预测的快得多，因为身体俯仰、足端在球形接触面上的滚动，以及各种动态效应都会增加步幅，而固定基座的运动学扫描看不到这些。在 `action_scale = 0.40` 时，实测上限约为 1.08 m/s，而不是扫描所暗示的 0.87。
 
-Trusting the static number would have capped the robot below its ability;
-trusting the aspirational number starved it of gradient. **Measure.**
+相信静态数字，会把机器人限制在其能力之下；相信理想化的数字，又会让它得不到梯度。**去测量。**
 
-### The fix
+### 修复
 
-Three parts.
+分三部分。
 
-**Raise the action scale to 0.40.** This buys stride length directly. It stops
-there because $k_p \times \alpha = 55 \times 0.40 = 22$ N·m, and the hip and
-thigh actuators are limited to 23.7 N·m — beyond that the PD offset alone
-saturates the actuator.
+**把动作缩放提高到 0.40。** 这直接换来了步幅。之所以止步于此，是因为 $k_p \times \alpha = 55 \times 0.40 = 22$ N·m，而髋关节和大腿关节的执行器限制在 23.7 N·m——再往上，仅 PD 偏移本身就会让执行器饱和。
 
-**Clamp every sampled command to what its own sampled frequency can deliver:**
+**把每个采样得到的指令钳制在其自身采样频率所能实现的范围内：**
 
 $$
 v_\max = \min\big(\kappa f,\ v_\text{ceiling}\big) \cdot m,
 \qquad \kappa = 0.40\ \tfrac{\text{m/s}}{\text{Hz}},\ v_\text{ceiling} = 1.0,\ m = 0.85
 $$
 
-Both constants come from the measured table. Sampling speed and frequency
-independently, as the code did, generates pairs like "1.0 m/s at 1.5 Hz" that
-no gait can satisfy.
+两个常数都来自实测表格。像原来的代码那样独立地采样速度和频率，会生成诸如“1.5 Hz 下 1.0 m/s”这样任何步态都无法满足的组合。
 
-**Set the configured range at the limit rather than above it.** The clamp means
-a wider range would not be *wrong* — it would just be a number that never means
-anything, which is exactly the kind of latent inconsistency this whole exercise
-is about removing.
+**把配置的范围设在上限处，而不是高于上限。** 有了钳制，更宽的范围也不算*错*——它只是一个永远不起作用的数字，而这恰恰是整个这番工作要清除的那种潜在不一致。
 
-### Confirmed by measurement
+### 经测量确认
 
-`scripts/check_env.py` now prints the speed envelope and the do-nothing baseline
-before any training happens:
+`scripts/check_env.py` 现在会在任何训练开始之前，打印速度范围和什么都不做的基线：
 
 ```
 frequency static bound  sampler limit
@@ -865,240 +663,162 @@ verdict             : every configured command is reachable
 do-nothing tracking score : 0.571   (curriculum promotes above 0.85)
 ```
 
-And the decisive check — does a competent gait actually out-score doing nothing?
+还有决定性的检查——一套合格的步态，得分真的比什么都不做更高吗？
 
-| command | scripted trot | standing | winner |
+| 指令 | 脚本化小跑 | 站立 | 胜者 |
 |---|---|---|---|
-| 0.50 m/s | $+0.02405$ | $+0.03669$ | standing |
-| 0.70 m/s | $+0.03298$ | $+0.03069$ | **trot** |
-| 0.85 m/s | $+0.03785$ | $+0.02891$ | **trot** |
+| 0.50 m/s | $+0.02405$ | $+0.03669$ | 站立 |
+| 0.70 m/s | $+0.03298$ | $+0.03069$ | **小跑** |
+| 0.85 m/s | $+0.03785$ | $+0.02891$ | **小跑** |
 
-The scripted controller is open-loop and always runs at 0.94 m/s, so at a
-command of 0.5 it overshoots and is correctly penalised. At commands near its
-own speed it wins by up to 31%. That is the reward behaving exactly as intended.
+脚本控制器是开环的，始终以 0.94 m/s 运行，所以在 0.5 的指令下它会超速，并被正确地惩罚。在接近它自身速度的指令下，它最多领先 31%。这正是奖励按预期工作的样子。
 
-### Lesson
+### 教训
 
-**A command space is part of the action space, and it needs the same
-reachability audit.** Before training a command-conditioned policy, ask what
-the extremes of the command distribution physically require, and check the
-robot can do it. Then check by measurement rather than by kinematics alone,
-because a static bound will be conservative in a way that quietly costs you
-performance.
+**指令空间是动作空间的一部分，它需要同样的可达性审查。** 在训练一个以指令为条件的策略之前，先问一问指令分布的极端情况在物理上需要什么，并检查机器人能否做到。然后用测量而不仅仅是运动学来核实，因为静态界限会偏保守，悄无声息地让你损失性能。
 
 ---
 
-## B21 — The robot spawned through the floor, in both backends (found in v2)
+## B21 —— 机器人在两个后端中都生成在了地板里（在 v2 中发现）
 
-Adding the robustness features to the MJX backend produced NaN losses in brax
-training. Three rounds of isolation — friction randomisation only, mass only,
-both — all showed NaN, which pointed squarely at domain randomisation.
+给 MJX 后端加上鲁棒性特性后，brax 训练出现了 NaN 损失。三轮排查——只开摩擦随机化、只开质量随机化、两者都开——全都出现 NaN，矛头直指域随机化。
 
-It was not domain randomisation. The control experiment that should have come
-first: 128 environments with **every feature off**. Still NaN, in one
-environment of the 128, within 2–6 steps of reset. Every smoke test until then
-had used 4–16 environments and passed by luck.
+但问题不在域随机化。本该最先做的对照实验是：128 个环境，**所有特性全部关闭**。仍然 NaN，出现在 128 个环境中的一个里，在重置后 2–6 步之内。在此之前的每一次冒烟测试都只用了 4–16 个环境，能通过纯属运气。
 
-### The evidence
+### 证据
 
-The `home` keyframe height *is* the standing height. So any downward
-perturbation at reset — the height noise, or a joint-angle perturbation that
-extends a leg — pushes a foot below the floor. Counting reset states with a
-foot below $z = 0$:
+`home` 关键帧的高度*就是*站立高度。所以重置时任何向下的扰动——高度噪声，或者让一条腿伸长的关节角度扰动——都会把一只脚推到地板以下。统计有足端低于 $z = 0$ 的重置状态：
 
-| backend | penetrating resets | deepest |
+| 后端 | 穿透的重置 | 最深 |
 |---|---|---|
-| MJX | 59 of 128 | 3.9 cm |
-| CPU | **144 of 200** | 6.6 cm |
+| MJX | 128 中的 59 | 3.9 cm |
+| CPU | **200 中的 144** | 6.6 cm |
 
-MJX's solver runs one iteration per step against MuJoCo's hundred, and it
-diverged to NaN outright. The CPU solver absorbed the penetration and raised
-nothing. It simply began 72% of every episode with a large spurious contact
-impulse — and this had been true of every CPU training run in the repository,
-including the one whose results are in chapter 15.
+MJX 的求解器每步只运行一次迭代，而 MuJoCo 运行一百次，于是它直接发散成了 NaN。CPU 求解器吸收了穿透，什么也没报。它只是让 72% 的回合一开始就带着一个巨大的虚假接触冲量——而这一点对本仓库中的每一次 CPU 训练运行都成立，包括结果写在第 15 章的那一次。
 
-### The fix
+### 修复
 
-After posing the robot at reset, measure the lowest foot and lift the base
-until it clears the ground by 2 mm. Two forward-kinematics calls per reset.
+在重置时摆好机器人的姿态之后，测量最低的那只脚，然后抬高机身，直到它离地 2 mm。每次重置两次正运动学调用。
 
-| | after the fix |
+| | 修复之后 |
 |---|---|
-| CPU | 0 of 200 resets penetrate; spawn height 0.282–0.327 m |
-| MJX | 128 environments × 300 steps, all finite, every feature on |
+| CPU | 200 次重置中 0 次穿透；生成高度 0.282–0.327 m |
+| MJX | 128 个环境 × 300 步，全部为有限值，所有特性开启 |
 
-### Lesson
+### 教训
 
-**Batch size is a test parameter.** A bug that hits one environment in 128 is
-invisible at 16. The regression test (`tests/test_mjx.py`) uses 128
-environments on purpose and says so in its docstring.
+**批量大小是一个测试参数。** 一个在 128 个环境中只命中一个的 bug，在 16 个环境下是看不见的。回归测试（`tests/test_mjx.py`）有意使用 128 个环境，并在其 docstring 中写明了这一点。
 
-And **run the everything-off control first.** Three rounds spent isolating
-features that were never the cause would have been one round.
+还有，**先跑全部关闭的对照组。** 花在排查那些从来不是原因的特性上的三轮，本可以只用一轮。
 
 ---
 
-## B22 — The GPU robot's actuators were position servos (found in v2)
+## B22 —— GPU 机器人的执行器是位置伺服（在 v2 中发现）
 
-**Severity: every GPU training run before this was invalid.**
+**严重程度：在此之前的每一次 GPU 训练运行都是无效的。**
 
-The first real GPU smoke run went NaN at 491k steps, but the more telling
-number came earlier. Brax's first evaluation runs a freshly initialised network
-deterministically, so its actions are close to zero — a robot that should just
-stand. Those episodes lasted **27 steps**, about half a second. And the episode
-length *fell* as training went on: 27, 22, 17.
+第一次真正的 GPU 冒烟运行在 491k 步时出现了 NaN，但更说明问题的数字出现得更早。Brax 的第一次评估会以确定性方式运行一个刚初始化的网络，因此它的动作接近零——一台本应只是站着的机器人。那些回合只持续了 **27 步**，大约半秒。而且随着训练进行，回合长度还在*下降*：27、22、17。
 
-### The evidence
+### 证据
 
-Driving the MJX environment directly with zero action, 256 environments, no
-brax wrappers in the way:
+用零动作直接驱动 MJX 环境，256 个环境，中间不经过任何 brax 包装器：
 
-| step | base height | feet in contact | environments dead |
+| 步数 | 机身高度 | 着地的脚 | 已终止的环境 |
 |---|---|---|---|
-| 1 | 0.303 m | 2.5 of 4 | 0 |
-| 11 | **0.388 m** | **0.1 of 4** | 0 |
-| 28 | 0.301 m | 2.2 of 4 | 102 |
-| 41 | 0.275 m | 1.9 of 4 | 194 |
+| 1 | 0.303 m | 4 只中 2.5 只 | 0 |
+| 11 | **0.388 m** | **4 只中 0.1 只** | 0 |
+| 28 | 0.301 m | 4 只中 2.2 只 | 102 |
+| 41 | 0.275 m | 4 只中 1.9 只 | 194 |
 
-Under zero action, the robot jumped: 9 cm into the air with almost no feet on
-the ground, then landed on its trunk. The table was the same with domain
-randomisation and pushes off, and nothing went NaN — so the physics was
-stable, and it was doing what it was told. It was being told the wrong thing.
+在零动作下，机器人跳了起来：腾空 9 cm，几乎没有脚着地，然后躯干着地。关掉域随机化和推扰后表格依旧，也没有出现 NaN——所以物理仿真是稳定的，它在执行收到的命令。只是它收到的命令是错的。
 
-Menagerie ships two Go2 models, and their actuators differ:
+Menagerie 提供了两个 Go2 模型，它们的执行器不一样：
 
-| | `scene.xml` (CPU) | `scene_mjx.xml` (GPU) |
+| | `scene.xml`（CPU） | `scene_mjx.xml`（GPU） |
 |---|---|---|
-| actuator | `motor` | `position` |
-| `ctrl` means | torque, N·m | joint-angle target, rad |
-| calf `ctrlrange` | ±45.43 | [−2.623, −0.848] |
-| internal PD | none | kp = 50, kd = 0.5 |
+| 执行器 | `motor` | `position` |
+| `ctrl` 的含义 | 力矩，N·m | 关节角度目标，rad |
+| 小腿 `ctrlrange` | ±45.43 | [−2.623, −0.848] |
+| 内置 PD | 无 | kp = 50, kd = 0.5 |
 
-The MJX environment computes a PD torque, exactly as the CPU environment does,
-and writes it to `ctrl`. On the servo model that number is read as an angle,
-clamped to the joint's range, and chased by a second PD the code does not know
-exists. At zero action the torque is about zero, so every joint is driven to
-roughly 0 rad. For the calf that clamps to −0.848, against a standing angle of
-−1.8. All four legs straighten at once, and the robot launches.
+MJX 环境和 CPU 环境完全一样地计算 PD 力矩，并把它写入 `ctrl`。在伺服模型上，这个数被当作一个角度读取，被钳制到关节范围内，再由一个代码根本不知道其存在的第二个 PD 去追踪。在零动作下力矩约为零，所以每个关节都被驱动到大约 0 rad。对小腿来说，这会被钳制到 −0.848，而站立角度是 −1.8。四条腿同时伸直，机器人就被弹射了出去。
 
-It corrupted the torque clamp as well. `torque_limits` was read from
-`ctrlrange`, which on this model is a joint range — so the calf's "torque limit"
-was −0.848.
+它还把力矩钳制也搞坏了。`torque_limits` 是从 `ctrlrange` 读取的，而在这个模型上它是关节范围——于是小腿的“力矩限制”是 −0.848。
 
-### Why nothing caught it
+### 为什么什么都没发现它
 
-This chapter's own "not bugs" section, below, records that writing torques into
-`data.ctrl` was correct *because the Go2 uses motor actuators*, and warns that
-on a position-servo model it would be a bug. That check was right, and it was
-done on `scene.xml`. The GPU backend loads a different file, and nobody asked
-the same question of it.
+本章自己下面的“不是 bug”一节记录了：把力矩写入 `data.ctrl` 是正确的，*因为 Go2 使用的是 motor 执行器*，并且警告说在位置伺服模型上这就会是个 bug。那项检查是对的，而且是在 `scene.xml` 上做的。GPU 后端加载的是另一个文件，却没有人对它问同样的问题。
 
-The tests missed it for a structural reason. `tests/test_mjx.py` asserts that
-the two backends compute the **same reward from the same state**. That is a
-claim about the objective. It says nothing about whether the same action
-produces the same *state*, and that is where this bug lived. The one dynamic
-check ran three steps and accepted any height between 0.1 and 0.6 m — which a
-robot in mid-launch passes.
+测试漏掉它有结构性的原因。`tests/test_mjx.py` 断言两个后端**从相同状态计算出相同奖励**。这是关于目标函数的论断。它完全不涉及相同的动作是否产生相同的*状态*，而这个 bug 恰恰藏在那里。唯一的动力学检查只跑了三步，接受 0.1 到 0.6 m 之间的任何高度——一台正在弹射途中的机器人也能通过。
 
-### The fix
+### 修复
 
-Convert the MJX model's actuators to torque motors at load time, with the CPU
-model's per-joint limits (`make_torque_actuators` in `mjx/mjx_env.py`). The
-alternative — writing position targets to `ctrl` and tuning the built-in servo
-to match — would have given the two backends two different controllers. This
-way the PD law is identical, line for line, in both.
+在加载时把 MJX 模型的执行器转换为力矩电机，并使用 CPU 模型的逐关节限制（`mjx/mjx_env.py` 中的 `make_torque_actuators`）。另一种方案——向 `ctrl` 写入位置目标，并调节内置伺服去匹配——会让两个后端拥有两个不同的控制器。按现在的做法，PD 控制律在两边逐行完全相同。
 
-Zero action, 256 environments, 150 steps, on the GPU:
+零动作，256 个环境，150 步，在 GPU 上：
 
-| | before | after |
+| | 修复前 | 修复后 |
 |---|---|---|
-| environments terminated | 239 of 256 | **0** |
-| feet in contact | 1.6 of 4 | **4.0 of 4** |
-| settled base height | fell to 0.21 m | **0.252 m** |
-| reward per step | −0.100 | **+0.032** |
+| 已终止的环境 | 256 中的 239 | **0** |
+| 着地的脚 | 4 只中 1.6 只 | **4 只中 4.0 只** |
+| 稳定后的机身高度 | 跌到 0.21 m | **0.252 m** |
+| 每步奖励 | −0.100 | **+0.032** |
 
-The settled height is the independent confirmation. Chapter 15 measures the CPU
-environment standing at the same gains ($k_p = 55$) at **0.254 m**. The two
-backends now agree on the dynamics, not only on the reward.
+稳定后的高度是独立的佐证。第 15 章测得 CPU 环境在相同增益（$k_p = 55$）下的站立高度为 **0.254 m**。两个后端现在不仅在奖励上一致，在动力学上也一致了。
 
-Two regression tests, both confirmed to fail with the fix reverted: one asserts
-the MJX actuators are torque motors with the CPU model's limits, in the same
-order; the other drives zero action for a full second and bounds the height
-tightly enough that a launch cannot pass.
+两个回归测试，都已确认在撤回修复后会失败：一个断言 MJX 执行器是力矩电机，且限制与 CPU 模型相同、顺序一致；另一个以零动作驱动整整一秒，并把高度约束得足够紧，使弹射无法通过。
 
-### Lesson
+### 教训
 
-**Parity tests must cover dynamics, not just the objective.** Sharing
-`envs/rewards.py` between backends guaranteed they optimise the same function.
-It guaranteed nothing about the inputs to that function. The cheapest dynamic
-parity check there is — does zero action produce a standing robot in both? —
-would have caught this on the day the MJX backend was written.
+**一致性测试必须覆盖动力学，而不只是目标函数。** 在两个后端之间共享 `envs/rewards.py`，保证了它们优化的是同一个函数。但它对这个函数的输入毫无保证。最廉价的动力学一致性检查——零动作在两边是否都能让机器人站住？——本可以在 MJX 后端写出来的当天就抓住这个 bug。
 
-And **a check is only as good as the file it was run on.** The right question
-had already been asked and answered in this chapter, about a different model.
+还有，**一项检查的价值取决于它是在哪个文件上跑的。** 正确的问题早已在本章中被提出并回答过了，只不过针对的是另一个模型。
 
 ---
 
-## Things that were checked and were *not* bugs
+## 检查过但*不是* bug 的东西
 
-Recording these matters as much as recording the bugs. A debugging log that only
-lists confirmed problems gives a false impression of how the work actually goes.
+记录这些和记录 bug 同样重要。一份只列出已确认问题的调试日志，会让人对实际工作是怎么进行的产生错误印象。
 
-**`_quat_rotate_inverse` was correct.** Verified against MuJoCo's
-`mju_rotVecQuat` over 200 random quaternions (`tests/test_math.py`). The bug was
-that it was never applied to velocities, not that it was wrong.
+**`_quat_rotate_inverse` 是正确的。** 已对照 MuJoCo 的 `mju_rotVecQuat` 在 200 个随机四元数上验证过（`tests/test_math.py`）。bug 在于它从未被应用到速度上，而不在于它本身有错。
 
-**Writing torques into `data.ctrl` was correct.** The Menagerie Go2 uses `motor`
-actuators with `ctrlrange` in newton-metres, so the units line up. This looks
-like a bug — many MJCF models use position servos, where it would be one — and
-is not. (It *was* one in the MJX backend, which loads `scene_mjx.xml` — a
-position-servo model. That is B22, above: the right check, run on the wrong
-file.)
+**把力矩写入 `data.ctrl` 是正确的。** Menagerie 的 Go2 使用 `motor` 执行器，其 `ctrlrange` 的单位是牛·米，所以单位是对得上的。这看起来像个 bug——许多 MJCF 模型使用位置伺服，在那种模型上它就是 bug——但它不是。（在 MJX 后端中它*确实*是 bug，因为那里加载的是 `scene_mjx.xml`——一个位置伺服模型。那就是上面的 B22：正确的检查，跑在了错误的文件上。）
 
-**Timeout bootstrapping was handled.** Chapter 4, §4.7 describes how treating
-truncation as termination biases the critic. SB3's vectorised wrappers set
-`TimeLimit.truncated` automatically and PPO acts on it, so v1 was fine here
-despite doing its own truncation inside the environment.
+**超时自举（bootstrap）的处理是正确的。** 第 4 章 §4.7 讲过把截断当作终止会如何让 critic 产生偏差。SB3 的向量化包装器会自动设置 `TimeLimit.truncated`，PPO 也会据此处理，所以尽管 v1 在环境内部自行做了截断，这一点上它并没有问题。
 
-**The PD gains were reasonable.** $k_p = 40$, $k_d = 1$ produce 2.8 cm of
-standing sag, which is about right for a compliant legged robot. They were
-eventually raised for the separate, measured reason in B17 — not because they
-were wrong.
+**PD 增益是合理的。** $k_p = 40$、$k_d = 1$ 会带来 2.8 cm 的站立下沉，对于一台柔顺的足式机器人来说差不多正合适。它们最终被提高，是出于 B17 中那个单独的、经过测量的原因——而不是因为它们错了。
 
 ---
 
-## Summary
+## 总结
 
-| # | Bug | Impact |
+| # | Bug | 影响 |
 |---|---|---|
-| B1 | Nominal pose outside the joint limits | **Defined v1's ceiling** |
-| B2 | World-frame velocity in reward and observation | Turning incoherent |
-| B3 | Reward could only express forward motion | Forward-only gait |
-| B4 | Gait reward maximised by standing still | No gait signal |
-| B5 | 8 blocking IPC round trips per step | Large throughput loss |
-| B6 | PD held constant for 40 ms | Judder |
-| B7 | 25 Hz control | Judder; halved horizon |
-| B8 | Single initial condition | Brittle |
-| B9 | GL context per frame | Slow rendering |
-| B10 | Contact detector counted self-contacts | Wrong gait signal |
-| B11 | Periodic, momentum-teleporting pushes | Memorisable, unphysical |
-| B12 | Resume lost normalisation statistics | **Silent policy destruction** |
-| B13 | Eval env normalisation not frozen | Noisy eval curve |
-| B14 | 2560 gradient steps per rollout | Instability and waste |
-| B15 | Docstring/space mismatch | Indicator |
-| B16 | `mujoco.viewer` not imported | `render("human")` crashed |
-| B17 | Marginal swing clearance (v2) | No foot lift |
-| B18 | Stepping reward was piecewise constant (v2) | **No gradient toward stepping** |
-| B19 | Stride reward made a correct trot score worse than standing (v2) | **Target behaviour was penalised** |
-| B20 | Command envelope asked for unreachable speeds (v2) | Tracking reward saturated; command ignored |
-| B21 | Reset noise buried a foot in the floor (v2) | Spurious impulse on CPU; NaN on GPU |
-| B22 | MJX model's actuators were position servos, fed torques (v2) | **Every GPU run invalid** |
+| B1 | 名义姿态超出关节限位 | **决定了 v1 的上限** |
+| B2 | 奖励和观测中使用世界坐标系速度 | 转弯无从谈起 |
+| B3 | 奖励只能表达前进运动 | 只会向前的步态 |
+| B4 | 步态奖励被静止站立最大化 | 没有步态信号 |
+| B5 | 每步 8 次阻塞式 IPC 往返 | 吞吐量大幅损失 |
+| B6 | PD 在 40 ms 内保持不变 | 抖动 |
+| B7 | 25 Hz 控制 | 抖动；视界减半 |
+| B8 | 单一初始条件 | 脆弱 |
+| B9 | 每帧一个 GL 上下文 | 渲染缓慢 |
+| B10 | 接触检测把自接触也算进去 | 错误的步态信号 |
+| B11 | 周期性、瞬移动量的推扰 | 可被记住，不符合物理 |
+| B12 | 恢复训练丢失归一化统计量 | **策略被静默摧毁** |
+| B13 | 评估环境的归一化未冻结 | 评估曲线有噪声 |
+| B14 | 每个 rollout 2560 次梯度更新 | 不稳定且浪费 |
+| B15 | docstring 与空间不一致 | 警示信号 |
+| B16 | 未导入 `mujoco.viewer` | `render("human")` 崩溃 |
+| B17 | 摆动抬足高度勉强（v2） | 不抬脚 |
+| B18 | 迈步奖励是分段常数（v2） | **没有朝向迈步的梯度** |
+| B19 | 步伐奖励让正确的小跑得分低于站立（v2） | **目标行为反被惩罚** |
+| B20 | 指令范围要求了不可达的速度（v2） | 跟踪奖励饱和；指令被忽略 |
+| B21 | 重置噪声把一只脚埋进了地板（v2） | CPU 上产生虚假冲量；GPU 上出现 NaN |
+| B22 | MJX 模型的执行器是位置伺服，却被喂了力矩（v2） | **所有 GPU 运行均无效** |
 
-The through-line: **not one of these announced itself.** Every one had to be
-found by asking what would have to be true for the code to be right, and then
-measuring it.
+贯穿始终的一点：**这些问题没有一个是自己暴露出来的。** 每一个都必须靠追问“要让代码是对的，必须有什么成立”，然后去测量，才能被找到。
 
 ---
 
-**Previous:** [13. Reading a training run](13-training-diagnostics.md) ·
-**Next:** [15. Results](15-results.md)
+**上一章：** [13. 解读训练过程](13-training-diagnostics.md) · **下一章：** [15. 结果](15-results.md)

@@ -1,166 +1,109 @@
-# 1. What reinforcement learning actually is
+# 1. 强化学习到底是什么
 
-## 1.1 The problem it solves
+## 1.1 它要解决的问题
 
-Supervised learning needs, for every input, the right answer. If you want a
-network that maps images to labels, you need labelled images.
+监督学习要求每个输入都有一个正确答案。如果你想要一个把图像映射到标签的网络，你就需要带标签的图像。
 
-Now consider the problem in this repository. The input is the robot's sensor
-state — joint angles, body attitude, the commanded velocity. The output is
-twelve joint position targets, fifty times a second. What is the "right answer"
-for the front-left knee at $t = 3.42$ s?
+现在来看本仓库里的问题。输入是机器人的传感器状态——关节角度、机身姿态、指令速度。输出是十二个关节的位置目标，每秒五十次。那么在 $t = 3.42$ s 时，左前腿膝关节的“正确答案”是什么？
 
-Nobody knows. There is no dataset of correct knee angles. There is not even a
-unique correct answer: many different joint trajectories produce a perfectly
-good trot, and which one is best depends on the terrain, the payload, and the
-robot's own momentum a fraction of a second earlier.
+没人知道。不存在一个正确膝关节角度的数据集。甚至连唯一的正确答案都不存在：许多不同的关节轨迹都能产生一套完全合格的小跑（trot），而哪一条最好，取决于地形、负载，以及机器人在零点几秒之前自身的动量。
 
-What we *can* say is whether the outcome was good. Did it move at the commanded
-velocity? Did it stay upright? Did it use a reasonable amount of torque? That
-is a much weaker signal than a label — it evaluates the result of a whole
-sequence of decisions, and it does not say which decision was responsible — but
-it is the only signal available, and reinforcement learning is the set of
-techniques for learning from exactly that.
+我们*能*说的，是结果好不好。它是否以指令速度移动？是否保持直立？是否用了合理大小的力矩？这比标签弱得多——它评价的是一整串决策的结果，而且并不告诉你是哪个决策该负责——但这是唯一可用的信号，而强化学习正是一套恰好从这种信号中学习的技术。
 
-The core difficulty, and the thing that makes RL genuinely harder than
-supervised learning, is **credit assignment**. The robot falls at $t = 4.0$ s.
-The mistake was probably a badly-timed foot placement at $t = 3.6$ s. Nothing
-in the reward signal says so. Everything in this book is, one way or another,
-machinery for solving that problem.
+核心难点、也是让强化学习真正比监督学习更难的东西，是**信用分配**。机器人在 $t = 4.0$ s 时摔倒了。错误很可能出在 $t = 3.6$ s 时一次时机不当的落足。奖励信号里没有任何东西告诉你这一点。本书的全部内容，归根结底都是用来解决这个问题的机制。
 
-## 1.2 Markov decision processes
+## 1.2 马尔可夫决策过程
 
-The formalisation is a **Markov decision process** (MDP), a five-tuple:
+形式化的表述是**马尔可夫决策过程**（MDP），一个五元组：
 
 $$
 \mathcal{M} = (\mathcal{S}, \mathcal{A}, P, R, \gamma)
 $$
 
-- $\mathcal{S}$ is the **state space**: everything the world can be.
-- $\mathcal{A}$ is the **action space**: everything the agent can do.
-- $P(s' \mid s, a)$ is the **transition kernel**: the probability of landing in
-  $s'$ after taking $a$ in $s$.
-- $R(s, a, s')$ is the **reward function**: a scalar emitted on each transition.
-- $\gamma \in [0, 1)$ is the **discount factor**.
+- $\mathcal{S}$ 是**状态空间**：世界可能处于的一切状态。
+- $\mathcal{A}$ 是**动作空间**：智能体能做的一切。
+- $P(s' \mid s, a)$ 是**转移核**：在 $s$ 中采取 $a$ 之后落到 $s'$ 的概率。
+- $R(s, a, s')$ 是**奖励函数**：每次转移时给出的一个标量。
+- $\gamma \in [0, 1)$ 是**折扣因子**。
 
-The word *Markov* is doing real work. It asserts that
+“马尔可夫”这个词可不是摆设。它断言
 
 $$
 P(s_{t+1} \mid s_t, a_t, s_{t-1}, a_{t-1}, \dots, s_0, a_0) = P(s_{t+1} \mid s_t, a_t)
 \tag{1.1}
 $$
 
-— the future depends on the past **only through the current state**. If that
-holds, a policy that looks only at $s_t$ loses nothing, and we can search over
-functions of one state instead of functions of entire histories.
+——未来**只通过当前状态**依赖于过去。如果这一点成立，那么只看 $s_t$ 的策略不会损失任何东西，我们就可以在单个状态的函数中搜索，而不必在整段历史的函数中搜索。
 
-This is not a technicality you can wave through. It is a design constraint on
-what you put in the observation, and it is why chapter 9 spends so long
-justifying each of the fifty numbers. A concrete example from this repository:
-the gait clock $\phi$ is part of the observation. If it were not, two moments
-with identical joint angles but different points in the stride cycle would look
-identical to the policy while having genuinely different correct actions — and
-the process would stop being Markov in the observed variables.
+这不是一个可以一笔带过的技术细节。它是对观测中该放什么的设计约束，这也是为什么第 9 章要花那么多篇幅为那五十个数中的每一个辩护。举一个本仓库中的具体例子：步态时钟 $\phi$ 是观测的一部分。如果没有它，两个关节角度完全相同、但处于步态周期不同位置的时刻，在策略看来会一模一样，而它们真正正确的动作却不同——于是这个过程在可观测变量上就不再是马尔可夫的了。
 
-### An important caveat: this is a POMDP
+### 一个重要的说明：这其实是一个 POMDP
 
-Strictly, a robot does not observe the state. It observes sensors. The true
-state includes ground friction, the exact mass distribution, actuator
-temperature — none of which appear in $o_t$. That makes this a *partially
-observable* MDP, and the honest position is that we are approximating a POMDP
-with an MDP over observations.
+严格来说，机器人观察不到状态，它观察到的是传感器读数。真实状态包括地面摩擦、精确的质量分布、执行器温度——这些都不出现在 $o_t$ 中。这使它成为一个*部分可观测* MDP，诚实的说法是：我们在用一个定义在观测上的 MDP 去近似一个 POMDP。
 
-Two things make the approximation work in practice:
+在实践中，有两件事让这个近似行得通：
 
-1. **Domain randomisation.** If the hidden variables are randomised across
-   episodes, the policy is forced to learn a control law that works for all of
-   them rather than exploiting one particular value. See chapter 12.
-2. **Enough observable state.** The Go2's proprioception — joint angles,
-   velocities, and body attitude — determines the immediate dynamics well
-   enough that the residual uncertainty behaves like noise rather than like a
-   hidden mode.
+1. **域随机化。** 如果隐藏变量在不同回合之间被随机化，策略就被迫学习一条对所有取值都有效的控制律，而不是去利用某个特定的取值。见第 12 章。
+2. **足够多的可观测状态。** Go2 的本体感知——关节角度、速度和机身姿态——足以很好地决定即时动力学，使得剩余的不确定性表现得像噪声，而不像一个隐藏的模式。
 
-## 1.3 Policies
+## 1.3 策略
 
-A **policy** is a rule for choosing actions. Deterministic:
+**策略**是一条选择动作的规则。确定性的：
 
 $$
 a_t = \mu_\theta(s_t)
 $$
 
-Stochastic — a distribution:
+随机的——一个分布：
 
 $$
 a_t \sim \pi_\theta(\cdot \mid s_t)
 $$
 
-Everything in this book uses stochastic policies, specifically diagonal
-Gaussians:
+本书中的一切都使用随机策略，具体来说是对角高斯：
 
 $$
 \pi_\theta(a \mid s) = \mathcal{N}\left(a \quad ;\quad \mu_\theta(s), \operatorname{diag}(\sigma^2)\right)
 \tag{1.2}
 $$
 
-where the mean $\mu_\theta(s)$ is a neural network and $\log \sigma$ is a free,
-learnable parameter vector independent of $s$.
+其中均值 $\mu_\theta(s)$ 是一个神经网络，$\log \sigma$ 是一个与 $s$ 无关的、自由的可学习参数向量。
 
-Why stochastic? Three reasons, in increasing order of importance:
+为什么要随机？三个理由，重要性依次递增：
 
-1. **Exploration.** A deterministic policy in a continuous action space visits a
-   measure-zero slice of the possibilities. Randomness is how the agent
-   discovers that a slightly different foot placement works better.
-2. **The gradient exists.** The policy gradient theorem (chapter 3) is a
-   statement about $\nabla_\theta \log \pi_\theta(a \mid s)$. A deterministic
-   policy has no such quantity — it needs a different derivation entirely (the
-   deterministic policy gradient, which is what DDPG and TD3 use).
-3. **Smoothness.** Optimising a distribution smooths the objective. The
-   expected return of a stochastic policy is differentiable in $\theta$ even
-   when the environment's dynamics are full of discontinuous contact events —
-   and a legged robot is nothing but discontinuous contact events.
+1. **探索。** 在连续动作空间里，确定性策略只会访问可能性中测度为零的一个切片。随机性正是智能体发现“稍微换个落足位置效果更好”的途径。
+2. **梯度存在。** 策略梯度定理（第 3 章）是一个关于 $\nabla_\theta \log \pi_\theta(a \mid s)$ 的命题。确定性策略没有这个量——它需要一套完全不同的推导（确定性策略梯度，也就是 DDPG 和 TD3 所用的）。
+3. **平滑性。** 优化一个分布会使目标变得平滑。即使环境动力学中充满了不连续的接触事件，随机策略的期望回报对 $\theta$ 依然是可微的——而足式机器人恰恰就是一连串不连续的接触事件。
 
-Why *diagonal* Gaussian? A full covariance would let the policy correlate joint
-noise, which is arguably more physical. It also costs $O(n^2)$ parameters and
-makes the entropy and log-probability computations substantially more
-expensive, for a benefit nobody has convincingly demonstrated on this class of
-task.
+为什么是*对角*高斯？完整协方差能让策略在关节噪声之间建立相关性，这可以说更符合物理。但它也需要 $O(n^2)$ 个参数，并让熵和对数概率的计算显著变贵，而换来的收益，在这类任务上还没有人令人信服地证明过。
 
-Why is $\sigma$ **state-independent**? A state-dependent $\sigma_\theta(s)$ is
-strictly more expressive. It is also strictly more dangerous: it lets the
-policy collapse its own exploration in exactly the states where exploration
-matters — the difficult ones — because reducing variance there raises expected
-return in the short run. The state-independent version anneals globally as
-training proceeds, which is the behaviour you want.
+为什么 $\sigma$ 是**与状态无关**的？与状态相关的 $\sigma_\theta(s)$ 严格来说表达能力更强。但它也严格来说更危险：它让策略能够恰恰在探索最重要的那些状态——困难的状态——里压缩自己的探索，因为在那里降低方差会在短期内提高期望回报。与状态无关的版本会随着训练推进而在全局上退火，这正是你想要的行为。
 
-## 1.4 Trajectories and return
+## 1.4 轨迹与回报
 
-Running a policy generates a **trajectory**:
+运行一个策略会生成一条**轨迹**：
 
 $$
 \tau = (s_0, a_0, r_0, s_1, a_1, r_1, \dots)
 $$
 
-with probability
+其概率为
 
 $$
 p_\theta(\tau) = p(s_0) \prod_{t=0}^{T-1} \pi_\theta(a_t \mid s_t) P(s_{t+1} \mid s_t, a_t)
 \tag{1.3}
 $$
 
-Equation 1.3 matters more than it looks. Notice that $\theta$ appears **only**
-in the $\pi_\theta$ factors, not in $p(s_0)$ or $P$. That single observation is
-what makes model-free RL possible: when we differentiate $\log p_\theta(\tau)$,
-every term involving the unknown environment dynamics disappears. Chapter 3
-turns that into an algorithm.
+式 1.3 比看上去要重要。注意 $\theta$ **只**出现在 $\pi_\theta$ 因子中，而不出现在 $p(s_0)$ 或 $P$ 中。正是这一个观察使无模型强化学习成为可能：当我们对 $\log p_\theta(\tau)$ 求导时，所有涉及未知环境动力学的项都会消失。第 3 章会把这一点变成一个算法。
 
-The **return** is the discounted sum of future rewards:
+**回报**是未来奖励的折扣和：
 
 $$
 G_t = \sum_{k=0}^{\infty} \gamma^k r_{t+k}
 \tag{1.4}
 $$
 
-and the objective is to maximise its expectation:
+而目标是最大化它的期望：
 
 $$
 J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\left[ G_0 \right]
@@ -168,85 +111,49 @@ J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\left[ G_0 \right]
 \tag{1.5}
 $$
 
-That is the whole problem statement. Every algorithm in this book is a way of
-estimating $\nabla_\theta J(\theta)$ from samples.
+这就是问题的全部陈述。本书中的每一个算法，都是从样本中估计 $\nabla_\theta J(\theta)$ 的一种方法。
 
-## 1.5 Why discount
+## 1.5 为什么要折扣
 
-$\gamma$ has three distinct justifications, and it is worth separating them
-because they suggest different values.
+$\gamma$ 有三个不同的理由，值得把它们分开来看，因为它们指向不同的取值。
 
-**Mathematical.** With $|r| \le r_\max$ and $\gamma < 1$, equation 1.4 converges:
-$|G_t| \le r_\max / (1 - \gamma)$. Without discounting, the return of a
-non-terminating task is $\infty$ and the objective is meaningless.
+**数学上的。** 在 $|r| \le r_\max$ 且 $\gamma < 1$ 时，式 1.4 收敛：$|G_t| \le r_\max / (1 - \gamma)$。如果不打折扣，一个不会终止的任务的回报就是 $\infty$，目标也就没有意义。
 
-**Statistical.** The estimate of $G_t$ from a single trajectory has variance
-that grows with the number of terms contributing to it. Discounting truncates
-the effective horizon, and hence the variance. This is a bias–variance trade:
-a smaller $\gamma$ gives a lower-variance, more biased estimate of the true
-infinite-horizon objective.
+**统计上的。** 从单条轨迹得到的 $G_t$ 估计，其方差随参与其中的项数增长。折扣截短了有效视界，从而也截短了方差。这是一种偏差–方差权衡：较小的 $\gamma$ 给出对真实无限视界目标方差更低、但偏差更大的估计。
 
-**Practical.** $\gamma$ sets the **effective horizon** — how far ahead the agent
-plans. The weight on a reward $k$ steps away is $\gamma^k$, so the horizon is
-roughly $1/(1 - \gamma)$ steps.
+**实践上的。** $\gamma$ 设定了**有效视界**——智能体向前规划多远。$k$ 步之外的奖励权重是 $\gamma^k$，因此视界大约是 $1/(1 - \gamma)$ 步。
 
-For this repository: $\gamma = 0.99$ at 50 Hz gives
+对本仓库而言：在 50 Hz 下 $\gamma = 0.99$ 给出
 
 $$
 \frac{1}{1 - 0.99} = 100 \text{ steps} = 2.0 \text{ seconds}
 $$
 
-Two seconds is about four strides at 2 Hz. That is the right order of magnitude
-for locomotion: the consequences of a foot placement play out over the next
-stride or two, not over the next thirty seconds. If you raised $\gamma$ to
-0.999 (20 s horizon) you would not gain foresight, you would gain variance —
-the critic would be trying to predict twenty seconds of a chaotic contact
-process from one state.
+两秒大约是 2 Hz 下的四个步态周期。对于运动控制来说，这个数量级是对的：一次落足的后果会在接下来的一两个步态周期内显现，而不是在接下来的三十秒里。如果你把 $\gamma$ 提高到 0.999（20 s 视界），你得到的不是远见，而是方差——critic 将试图从单个状态出发，预测一个混沌接触过程未来二十秒的走向。
 
-Note the interaction with control rate, which is easy to get wrong. v1 ran at
-25 Hz with $\gamma = 0.99$, giving a 4-second horizon; v2 runs at 50 Hz with the
-same $\gamma$, giving 2 seconds. Doubling the control rate **halved** the
-effective planning horizon. If you change `decimation`, you have implicitly
-changed $\gamma$'s meaning.
+注意它与控制频率的相互作用，这一点很容易搞错。v1 以 25 Hz 运行、$\gamma = 0.99$，对应 4 秒视界；v2 以 50 Hz 运行、$\gamma$ 相同，对应 2 秒。控制频率翻倍，有效规划视界却**减半**了。如果你改了 `decimation`，你就隐式地改变了 $\gamma$ 的含义。
 
-## 1.6 Episodes, termination, and truncation
+## 1.6 回合、终止与截断
 
-Real training runs episodes: reset, act until something ends it, reset. Two
-different things can end an episode, and conflating them is a genuine bug that
-appears in a lot of code.
+真实的训练按回合进行：重置，一直行动到有什么东西结束它，再重置。有两种不同的东西会结束一个回合，把它们混为一谈是一个真实存在的 bug，在大量代码中都能看到。
 
-**Termination** — the MDP genuinely reached an absorbing state. The robot fell
-over. There is no future reward, so $G_t$ really does stop. The correct value
-target uses $V(s_{T}) = 0$.
+**终止**——MDP 真的到达了一个吸收态。机器人摔倒了。之后不再有奖励，所以 $G_t$ 确实到此为止。正确的价值目标使用 $V(s_{T}) = 0$。
 
-**Truncation** — we stopped the episode for our own convenience, usually a time
-limit. The robot was walking perfectly well at second 20 and would have carried
-on. The return did *not* stop; we simply stopped watching.
+**截断**——我们出于自己的方便停止了回合，通常是时间上限。机器人在第 20 秒时走得好好的，本来还会继续走下去。回报*并没有*停止；我们只是不再看了。
 
-If you treat truncation as termination, you tell the critic that every state 20
-seconds into an episode has zero future value. That bias propagates backwards
-through the Bellman recursion and corrupts value estimates everywhere, and it
-looks like nothing more specific than "training is a bit worse than it should
-be".
+如果你把截断当作终止，你就是在告诉 critic：每个回合进行到 20 秒时的状态，未来价值都为零。这个偏差会通过贝尔曼递推向后传播，污染各处的价值估计，而它的表现仅仅是一句含糊的“训练效果比应有的差一点”。
 
-The fix is to bootstrap: on truncation, add $\gamma V(s_T)$ to the final reward
-and treat the boundary as a break in the advantage recursion only. In this
-repository:
+解决办法是自举（bootstrap）：在截断时，把 $\gamma V(s_T)$ 加到最后一个奖励上，并且只把这个边界当作优势递推中的一个断点。在本仓库中：
 
-- Gymnasium's API distinguishes them: `step()` returns `terminated` and
-  `truncated` separately. `Go2Env.step` sets `terminated` from
-  `_check_termination` and `truncated` from the step counter.
-- Stable-Baselines3's vectorised wrappers convert this into a
-  `TimeLimit.truncated` key in the info dict and handle the bootstrap for you.
-- `ppo_from_scratch/ppo.py` does it explicitly, in `RolloutBuffer.compute_returns`
-  and in the `truncated_values` array — go and read that code, because it is
-  the clearest place in the repository to see the distinction made concrete.
+- Gymnasium 的 API 区分了二者：`step()` 分别返回 `terminated` 和 `truncated`。`Go2Env.step` 根据 `_check_termination` 设置 `terminated`，根据步数计数器设置 `truncated`。
+- Stable-Baselines3 的向量化封装器会把它转换为 info 字典中的 `TimeLimit.truncated` 键，并替你处理自举。
+- `ppo_from_scratch/ppo.py` 则显式地做了这件事，见 `RolloutBuffer.compute_returns` 以及 `truncated_values` 数组——去读一读那段代码，因为那是整个仓库里把这一区分落到实处最清楚的地方。
 
-## 1.7 This robot's MDP, written out
+## 1.7 把这台机器人的 MDP 写出来
 
-To make all of the above stop being abstract, here is the actual MDP.
+为了让上面这些不再抽象，下面是实际的 MDP。
 
-**State** (as observed; 50 dimensions — see chapter 9):
+**状态**（以观测形式；50 维——见第 9 章）：
 
 $$
 o_t = \big[\quad 
@@ -261,68 +168,45 @@ o_t = \big[\quad
 \quad \big]
 $$
 
-where $g_b$ is gravity in the base frame, $\omega_b$ and $v_b$ are base-frame
-angular and linear velocity, $q$ the joint angles, $c$ the commanded velocity
-$(v_x^*, v_y^*, \omega_z^*)$, and $\phi$ the gait phase.
+其中 $g_b$ 是机身坐标系下的重力，$\omega_b$ 和 $v_b$ 是机身坐标系下的角速度和线速度，$q$ 是关节角度，$c$ 是指令速度 $(v_x^*, v_y^*, \omega_z^*)$，$\phi$ 是步态相位。
 
-**Action** ($\mathcal{A} = [-1, 1]^{12}$): joint position offsets. The applied
-target is
+**动作**（$\mathcal{A} = [-1, 1]^{12}$）：关节位置偏移量。实际施加的目标是
 
 $$
 q^*_t = q_\text{nom} + \alpha a_t, \qquad \alpha = 0.40 \text{ rad}
 $$
 
-and a PD controller converts that to torque at each physics substep:
+并由一个 PD 控制器在每个物理子步中把它转换为力矩：
 
 $$
 \tau = k_p (q^* - q) - k_d \dot q, \qquad k_p = 55, \quad k_d = 1.4
 \tag{1.6}
 $$
 
-**Transitions**: MuJoCo, 2 ms physics step, 10 substeps per control step.
-Stochastic across episodes because of randomised initial conditions, randomised
-friction and mass, and randomly-timed external pushes.
+**转移**：MuJoCo，2 ms 物理步长，每个控制步 10 个子步。由于初始条件随机化、摩擦和质量随机化，以及随机时刻施加的外力推扰，转移在不同回合之间是随机的。
 
-**Reward**: seventeen weighted terms, summed and scaled by $\Delta t$. Chapter 10.
+**奖励**：十七个加权项，求和后乘以 $\Delta t$。见第 10 章。
 
-**Discount**: $\gamma = 0.99$, i.e. a 2-second horizon.
+**折扣**：$\gamma = 0.99$，即 2 秒视界。
 
-**Termination**: trunk contacts the ground, or base height $< 0.12$ m, or tilt
-exceeds 0.8 rad.
+**终止**：躯干触地，或机身高度 $< 0.12$ m，或倾斜超过 0.8 rad。
 
-**Truncation**: 1000 control steps, i.e. 20 seconds.
+**截断**：1000 个控制步，即 20 秒。
 
-## 1.8 What makes this problem hard
+## 1.8 这个问题难在哪里
 
-Worth stating plainly, because it explains why so much of the rest of this book
-is about reward design rather than about the optimiser.
+值得直白地说出来，因为这解释了为什么本书其余部分大量篇幅讲的是奖励设计，而不是优化器。
 
-**The action space is continuous and 12-dimensional.** Enumerating actions is
-out. Everything must be gradient-based.
+**动作空间是连续的，而且是 12 维的。** 枚举动作是不可能的。一切都必须基于梯度。
 
-**Rewards are dense but misleading.** We can score every step, which is much
-better than a sparse "did you reach the goal" signal. But every dense reward is
-a *proxy* for what you want, and the optimiser will find the gap between the
-proxy and your intent. Chapter 10 has a worked example from this very
-repository where the gait reward was maximised by a robot standing perfectly
-still.
+**奖励是稠密的，但具有误导性。** 我们可以给每一步打分，这比稀疏的“你到达目标了吗”信号好得多。但每一个稠密奖励都只是你真正想要的东西的*代理指标*，而优化器一定会找到代理指标与你的意图之间的缝隙。第 10 章有一个来自本仓库的实例：步态奖励被一台纹丝不动地站着的机器人最大化了。
 
-**The dynamics are contact-rich and stiff.** Feet make and break contact
-constantly. The dynamics are effectively discontinuous, the value function has
-sharp structure, and small action changes can flip a contact event.
+**动力学富含接触且是刚性的。** 足端不断地建立和断开接触。动力学实际上是不连续的，价值函数具有尖锐的结构，微小的动作变化就可能翻转一次接触事件。
 
-**Failures are terminal and early.** An untrained policy falls in under a
-second. Almost all early data is about falling over, which is exactly the
-regime where the reward signal is least informative about what walking looks
-like.
+**失败是终止性的，而且来得很早。** 一个未经训练的策略不到一秒就会摔倒。几乎所有早期数据都是关于摔倒的，而这恰恰是奖励信号对“行走应该是什么样子”最缺乏信息量的区间。
 
-**The behaviour must be periodic.** Locomotion is a limit cycle. Nothing in the
-MDP formulation prefers periodic solutions, and a policy optimising a
-velocity-tracking reward will happily find aperiodic, twitching gaits that
-track velocity acceptably and look wrong. Chapter 11 is about putting the
-periodicity in explicitly rather than hoping for it.
+**行为必须是周期性的。** 运动是一个极限环。MDP 的表述中没有任何东西偏好周期性解，一个优化速度跟踪奖励的策略会很乐意找到非周期的、抽搐式的步态——速度跟踪得还行，看起来却不对。第 11 章讲的就是如何显式地把周期性放进去，而不是寄希望于它自己出现。
 
 ---
 
-**Next:** [2. Value functions and policies](02-value-functions-and-policies.md)
-— what we need to estimate before we can compute a gradient.
+**下一章：** [2. 价值函数与策略](02-value-functions-and-policies.md) —— 在能够计算梯度之前，我们需要估计哪些东西。

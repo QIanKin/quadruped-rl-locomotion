@@ -1,42 +1,36 @@
-# 3. Policy gradients from first principles
+# 3. 从第一性原理推导策略梯度
 
-This chapter derives $\nabla_\theta J(\theta)$ in full. It is the mathematical
-core of the book: PPO is a modification of the result derived here, and if you
-follow this chapter the rest is detail.
+本章完整地推导 $\nabla_\theta J(\theta)$。这是全书的数学核心：PPO 是对这里推导出的结果的一种修改，只要你跟上了本章，剩下的就都是细节。
 
-## 3.1 The obstacle
+## 3.1 障碍
 
-We want to maximise
+我们想要最大化
 
 $$
 J(\theta) = \mathbb{E}_{\tau \sim p_\theta}[ R(\tau) ],
 \qquad R(\tau) = \sum_{t=0}^{T-1} \gamma^t r_t
 $$
 
-and to do gradient ascent we need $\nabla_\theta J$.
+而要做梯度上升，我们需要 $\nabla_\theta J$。
 
-The difficulty is immediate. Write the expectation as an integral:
+困难立刻就出现了。把期望写成积分：
 
 $$
 J(\theta) = \int p_\theta(\tau) R(\tau) \mathrm{d}\tau
 $$
 
-so
+于是
 
 $$
 \nabla_\theta J(\theta) = \int \nabla_\theta p_\theta(\tau) R(\tau) \mathrm{d}\tau
 \tag{3.1}
 $$
 
-$\theta$ appears in the **distribution we are sampling from**, not in the thing
-we are averaging. Equation 3.1 is not an expectation over $p_\theta$ any more —
-it is an integral against $\nabla_\theta p_\theta$, which is not a probability
-distribution and which we cannot sample from. We cannot estimate it by running
-the policy.
+$\theta$ 出现在**我们采样所用的分布**里，而不是出现在被平均的量里。式 3.1 不再是关于 $p_\theta$ 的期望——它是对 $\nabla_\theta p_\theta$ 的积分，而后者不是概率分布，我们也无法从中采样。我们没法靠运行策略来估计它。
 
-## 3.2 The log-derivative trick
+## 3.2 对数导数技巧
 
-The way out is one line of calculus. For any positive $p$,
+出路只需一行微积分。对任意正的 $p$，
 
 $$
 \nabla_\theta \log p_\theta(\tau) = \frac{\nabla_\theta p_\theta(\tau)}{p_\theta(\tau)}
@@ -45,7 +39,7 @@ $$
 \tag{3.2}
 $$
 
-Substituting into 3.1:
+代入 3.1：
 
 $$
 \nabla_\theta J(\theta)
@@ -54,61 +48,45 @@ $$
 \tag{3.3}
 $$
 
-This is now an expectation over trajectories we can actually generate. Run the
-policy, collect trajectories, average $\nabla_\theta \log p_\theta(\tau) R(\tau)$.
+现在它是一个关于我们确实能生成的轨迹的期望了。运行策略，收集轨迹，对 $\nabla_\theta \log p_\theta(\tau) R(\tau)$ 求平均。
 
-The trick has a name — the **score function estimator**, or REINFORCE — and it
-is worth appreciating how much it buys for how little. It converts a gradient
-of an expectation into an expectation of a gradient, which is the difference
-between "impossible" and "a for loop".
+这个技巧有个名字——**得分函数估计量**（score function estimator），或称 REINFORCE——值得体会一下它以多么小的代价换来了多么大的收益。它把“期望的梯度”变成了“梯度的期望”，而这正是“不可能”与“一个 for 循环”之间的差别。
 
-## 3.3 The dynamics cancel
+## 3.3 动力学被消掉了
 
-Equation 3.3 still looks unusable: $\log p_\theta(\tau)$ contains the transition
-kernel $P$, which we do not know. Expand it, using equation 1.3:
+式 3.3 看起来仍然没法用：$\log p_\theta(\tau)$ 里包含转移核 $P$，而我们并不知道它。利用式 1.3 把它展开：
 
 $$
 \log p_\theta(\tau) = \log p(s_0) + \sum_{t=0}^{T-1} \Big[ \log \pi_\theta(a_t \mid s_t) + \log P(s_{t+1} \mid s_t, a_t) \Big]
 $$
 
-Now differentiate with respect to $\theta$. The initial-state term $\log p(s_0)$
-does not depend on $\theta$. Neither does any $\log P$ term — the physics does
-not care what our network weights are. Both vanish:
+现在对 $\theta$ 求导。初始状态项 $\log p(s_0)$ 不依赖于 $\theta$。任何 $\log P$ 项也不依赖于它——物理规律可不在乎我们的网络权重是多少。两者都消失了：
 
 $$
 \nabla_\theta \log p_\theta(\tau) = \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t)
 \tag{3.4}
 $$
 
-**This is why model-free RL works.** We never need $P$. The gradient depends on
-the environment only through the rewards that the sampled trajectories happened
-to receive. Substituting 3.4 into 3.3:
+**这就是无模型强化学习之所以可行的原因。** 我们从来不需要 $P$。梯度对环境的依赖，仅仅体现在采样到的轨迹碰巧获得的奖励上。把 3.4 代入 3.3：
 
 $$
 \nabla_\theta J(\theta) = \mathbb{E}_{\tau}\left[ \left( \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right) R(\tau) \right]
 \tag{3.5}
 $$
 
-This is **REINFORCE** (Williams, 1992). It is a correct, unbiased estimator of
-the policy gradient, and it is nearly useless in practice. The next two sections
-explain why, and fix it.
+这就是 **REINFORCE**（Williams，1992）。它是策略梯度的一个正确的、无偏的估计量，但在实践中几乎毫无用处。接下来两节解释原因，并修复它。
 
-## 3.4 Problem one: the future cannot change the past
+## 3.4 问题一：未来无法改变过去
 
-In 3.5, every action in the trajectory is weighted by the **total** return
-$R(\tau)$, including reward collected *before* that action was taken. An action
-at $t = 300$ is credited with reward earned at $t = 5$.
+在 3.5 中，轨迹里的每一个动作都由**总**回报 $R(\tau)$ 加权，其中包括在该动作被采取*之前*就已获得的奖励。$t = 300$ 时的动作，被记上了 $t = 5$ 时挣到的奖励。
 
-That contributes nothing but noise, and we can prove it. Consider the
-contribution of a single early reward $r_{t'}$ to the gradient term for a later
-action $a_t$ with $t > t'$:
+这除了噪声什么也贡献不了，而且我们可以证明这一点。考虑某个较早的奖励 $r_{t'}$ 对一个较晚动作 $a_t$（$t > t'$）的梯度项的贡献：
 
 $$
 \mathbb{E}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \cdot r_{t'} \right]
 $$
 
-Condition on everything up to and including $s_t$. Then $r_{t'}$ is a fixed
-number, and
+以直到 $s_t$（含）为止的一切为条件。那么 $r_{t'}$ 就是一个固定的数，并且
 
 $$
 \mathbb{E}_{a_t \sim \pi_\theta}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right]
@@ -118,9 +96,7 @@ $$
 \tag{3.6}
 $$
 
-The expected score is zero. So the cross-term has expectation zero: it is
-unbiased noise, pure variance with no signal. Dropping it gives the
-**reward-to-go** form:
+得分的期望为零。所以这个交叉项的期望为零：它是无偏的噪声，纯粹的方差，没有任何信号。去掉它，就得到了**未来回报**（reward-to-go）形式：
 
 $$
 \nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) G_t \right],
@@ -128,44 +104,37 @@ $$
 \tag{3.7}
 $$
 
-Equation 3.6 is worth remembering on its own. It is used again immediately, and
-again in chapter 5.
+式 3.6 本身就值得记住。它马上就会再次用到，在第 5 章还会再用一次。
 
-## 3.5 Problem two: baselines
+## 3.5 问题二：基线
 
-Even with reward-to-go, variance is brutal. $G_t$ for this robot is a sum of a
-hundred-odd noisy terms; two runs of the *same* policy from the *same* state
-can differ substantially because of contact chaos.
+即便用了未来回报，方差依然残酷。对这台机器人来说，$G_t$ 是一百多个带噪项之和；*同一个*策略从*同一个*状态出发跑两次，由于接触的混沌性，结果可能相差很大。
 
-The fix uses 3.6 again. Subtract any function $b(s_t)$ that does not depend on
-$a_t$:
+修复办法再次用到 3.6。减去任意一个不依赖于 $a_t$ 的函数 $b(s_t)$：
 
 $$
 \mathbb{E}_{a_t}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) b(s_t) \right]
 = b(s_t) \mathbb{E}_{a_t}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right] = 0
 $$
 
-So for **any** state-dependent baseline $b$:
+因此对于**任意**依赖于状态的基线 $b$：
 
 $$
 \nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) \big( G_t - b(s_t) \big) \right]
 \tag{3.8}
 $$
 
-The estimator stays unbiased for every choice of $b$, but its **variance
-changes**. Choosing $b$ well is free variance reduction.
+无论 $b$ 怎么选，这个估计量都保持无偏，但它的**方差会变**。选好 $b$，就是白捡的方差缩减。
 
-### The optimal baseline
+### 最优基线
 
-Minimise the variance of the estimator with respect to $b$. Writing
-$g = \nabla_\theta \log \pi_\theta(a \mid s)$ and treating one component at a time,
+关于 $b$ 最小化估计量的方差。记 $g = \nabla_\theta \log \pi_\theta(a \mid s)$，并且一次只处理一个分量，
 
 $$
 \operatorname{Var}\left[ g (G - b) \right] = \mathbb{E}\left[ g^2 (G-b)^2 \right] - \left( \mathbb{E}[g(G-b)] \right)^2
 $$
 
-The second term does not depend on $b$ (it is the unbiased gradient). Setting
-$\partial / \partial b$ of the first term to zero:
+第二项不依赖于 $b$（它就是那个无偏梯度）。令第一项的 $\partial / \partial b$ 为零：
 
 $$
 -2\mathbb{E}\left[ g^2 (G - b) \right] = 0
@@ -174,19 +143,13 @@ b^\star = \frac{\mathbb{E}\left[ g^2 G \right]}{\mathbb{E}\left[ g^2 \right]}
 \tag{3.9}
 $$
 
-— a score-weighted average return. In practice nobody uses 3.9: it needs
-per-parameter baselines and second moments of the score. The near-optimal,
-practical choice is the unweighted average return from that state, which is
-exactly
+——一个以得分加权的平均回报。实践中没人用 3.9：它需要逐参数的基线，还需要得分的二阶矩。接近最优的实用选择，是从该状态出发的不加权平均回报，而这恰好就是
 
 $$
 b(s) = V^\pi(s)
 $$
 
-And with that choice, $G_t - V^\pi(s_t)$ is an unbiased sample of
-$Q^\pi(s_t,a_t) - V^\pi(s_t) = A^\pi(s_t, a_t)$. The advantage function from
-chapter 2 appears, not as a heuristic, but as the natural consequence of
-optimal variance reduction:
+而选定它之后，$G_t - V^\pi(s_t)$ 就是 $Q^\pi(s_t,a_t) - V^\pi(s_t) = A^\pi(s_t, a_t)$ 的一个无偏样本。第 2 章的优势函数出现了——它不是作为一种启发式，而是作为最优方差缩减的自然结果出现的：
 
 $$
 \boxed{\quad 
@@ -195,83 +158,49 @@ $$
 \tag{3.10}
 $$
 
-This is the **policy gradient theorem** in the form every modern algorithm
-uses.
+这就是每个现代算法所使用的那种形式的**策略梯度定理**。
 
-## 3.6 Reading the gradient
+## 3.6 解读这个梯度
 
-Equation 3.10 has an interpretation worth internalising, because it explains
-every training pathology you will meet.
+式 3.10 有一个值得内化的解读，因为它能解释你将遇到的每一种训练病症。
 
-$\nabla_\theta \log \pi_\theta(a \mid s)$ points in the direction of parameter
-space that makes $a$ **more likely** in $s$. Multiplying by $A$:
+$\nabla_\theta \log \pi_\theta(a \mid s)$ 指向参数空间中让 $a$ 在 $s$ 中**更可能**被选中的方向。乘以 $A$ 之后：
 
-- $A > 0$ (better than the policy's average): step in that direction. Make this
-  action more likely.
-- $A < 0$: step against it. Make this action less likely.
-- $A \approx 0$: no update.
+- $A > 0$（比策略的平均水平好）：沿该方向迈一步。让这个动作更可能发生。
+- $A < 0$：逆着它迈一步。让这个动作更不可能发生。
+- $A \approx 0$：不更新。
 
-So the policy gradient is: *do more of what worked, less of what did not,
-where "worked" means "beat my own average".*
+所以策略梯度就是：*多做有效的事，少做无效的事，而“有效”的意思是“胜过了我自己的平均水平”。*
 
-Two corollaries:
+两个推论：
 
-**If the critic is biased, the policy learns the bias.** $A$ is estimated as
-$G_t - \hat V(s_t)$. If $\hat V$ systematically underestimates value in some
-region, every action in that region gets a positive advantage and is reinforced
-regardless of merit. This is why `explained_variance` is the number to watch.
+**如果 critic 有偏差，策略就会学到这个偏差。** $A$ 被估计为 $G_t - \hat V(s_t)$。如果 $\hat V$ 在某个区域系统性地低估价值，那么该区域中的每个动作都会得到正的优势，不论好坏都会被强化。这就是为什么 `explained_variance` 是要盯住的那个数。
 
-**If all advantages have the same sign, nothing useful happens.** The policy
-pushes uniformly toward every action it took, which mostly just inflates or
-deflates the entropy. In practice advantages are standardised per minibatch
-(see `normalize_advantage` in `ppo_from_scratch/ppo.py`) partly to guarantee
-this cannot happen.
+**如果所有优势的符号都相同，就不会发生任何有用的事。** 策略会一律朝它采取过的每个动作推进，这基本上只会让熵膨胀或收缩。实践中，优势会按小批量（minibatch）进行标准化（见 `ppo_from_scratch/ppo.py` 中的 `normalize_advantage`），部分原因就是为了保证这种情况不会发生。
 
-## 3.7 The loss you actually write in PyTorch
+## 3.7 你在 PyTorch 里实际写的损失
 
-Autodiff frameworks minimise, and they differentiate a scalar. You do not code
-equation 3.10 directly — you code a surrogate scalar whose gradient equals it:
+自动微分框架做的是最小化，而且对一个标量求导。你不会直接把式 3.10 写成代码——你写的是一个代理标量，它的梯度等于式 3.10：
 
 $$
 L(\theta) = - \frac{1}{N} \sum_{i} \log \pi_\theta(a_i \mid s_i) \hat A_i
 \tag{3.11}
 $$
 
-with $\hat A_i$ treated as a **constant** (detached from the graph). Then
-$\nabla_\theta L$ is exactly minus 3.10, and gradient descent on $L$ is gradient
-ascent on $J$.
+其中 $\hat A_i$ 被当作**常数**（从计算图中分离出来）。于是 $\nabla_\theta L$ 恰好是 3.10 的相反数，对 $L$ 做梯度下降就是对 $J$ 做梯度上升。
 
-$L$ is not a loss in any meaningful sense. Its value is not a measure of
-performance; it can be any sign and it does not decrease as training improves.
-Watching `policy_loss` go down tells you nothing. This is the single most
-common misreading of an RL training log.
+$L$ 在任何有意义的层面上都不是一个损失。它的值不衡量性能；它可正可负，也不会随着训练变好而下降。看着 `policy_loss` 往下走，什么也说明不了。这是对强化学习训练日志最常见的一种误读。
 
-## 3.8 Why REINFORCE alone is not enough
+## 3.8 为什么光有 REINFORCE 还不够
 
-Everything so far is correct and still insufficient. Three problems remain, and
-they define the next two chapters.
+到目前为止的一切都是正确的，但仍然不够。还剩三个问题，它们决定了接下来两章的内容。
 
-**1. $A^\pi$ is unknown.** Equation 3.10 needs the true advantage. Using the
-Monte-Carlo estimate $G_t - \hat V(s_t)$ is unbiased but high-variance; using a
-one-step TD estimate is low-variance but biased by the critic's error. Chapter 4
-(GAE) is the principled interpolation.
+**1. $A^\pi$ 是未知的。** 式 3.10 需要真实的优势。使用蒙特卡洛估计 $G_t - \hat V(s_t)$ 是无偏的，但方差很高；使用单步 TD 估计方差很低，但会因 critic 的误差而有偏。第 4 章（GAE）给出了有原则的折中插值。
 
-**2. The data is stale after one step.** Equation 3.10 is an expectation under
-$\pi_\theta$ — the *current* policy. As soon as you take one gradient step, your
-collected trajectories were generated by a different policy and the estimator is
-no longer valid. Strict on-policy learning therefore permits one update per
-rollout, which is a catastrophic waste of expensive simulation. Chapter 5
-(importance sampling and PPO) is how you get many updates out of one rollout
-without the estimator falling apart.
+**2. 走一步之后数据就过时了。** 式 3.10 是在 $\pi_\theta$——*当前*策略——下的期望。只要你走了一步梯度，你收集到的轨迹就变成由另一个策略生成的了，估计量也就不再有效。因此，严格的同策略（on-policy）学习每次 rollout 只允许一次更新，这是对昂贵仿真的灾难性浪费。第 5 章（重要性采样与 PPO）讲的就是如何从一次 rollout 中得到多次更新，而不让估计量崩溃。
 
-**3. Step size is unbounded and consequences are asymmetric.** In supervised
-learning a too-large step gives a bad prediction and the next batch corrects it.
-In RL a too-large step changes the policy, which changes the *data distribution*
-you collect next. A policy that becomes bad enough collects only data about
-falling over, and there is no gradient back to competence. This is why RL needs
-trust regions and supervised learning does not — again chapter 5.
+**3. 步长没有上限，后果也不对称。** 在监督学习中，步子太大只会给出一个糟糕的预测，下一个批次就会把它纠正回来。在强化学习中，步子太大会改变策略，而策略又会改变你接下来收集的*数据分布*。一个变得足够差的策略只会收集到关于摔倒的数据，而从那里不存在通往胜任的梯度。这就是为什么强化学习需要信赖域而监督学习不需要——同样见第 5 章。
 
 ---
 
-**Previous:** [2. Value functions and policies](02-value-functions-and-policies.md) ·
-**Next:** [4. Actor-critic and GAE](04-actor-critic-and-gae.md)
+**上一章：** [2. 价值函数与策略](02-value-functions-and-policies.md) · **下一章：** [4. Actor-Critic 与 GAE](04-actor-critic-and-gae.md)
